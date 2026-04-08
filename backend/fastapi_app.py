@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import load_config
 from models import AppState
-from notion_sync import build_end_of_day_payload
+from notion_sync import NotionSyncError, build_end_of_day_payload, sync_end_of_day_to_notion
 from runner import (
     build_action_result,
     build_empty_payload_result,
@@ -113,6 +113,16 @@ def post_state(state: AppState) -> dict:
 def get_end_of_day(date: str | None = Query(default=None)) -> dict:
     payload = build_end_of_day_payload(load_state(), date_str=date)
     return payload.model_dump(mode="json")
+
+
+@app.post("/api/notion/end-of-day/sync")
+def post_end_of_day_sync(date: str | None = Query(default=None)) -> dict:
+    payload = build_end_of_day_payload(load_state(), date_str=date)
+    try:
+        result = sync_end_of_day_to_notion(payload)
+    except NotionSyncError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return result.model_dump(mode="json")
 
 
 @app.post("/api/missions/{mission_id}/process")

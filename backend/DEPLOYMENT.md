@@ -16,6 +16,7 @@ The current production shape is:
 - `POST /api/state`
 - `POST /api/missions/{id}/process`
 - `GET /api/notion/end-of-day`
+- `POST /api/notion/end-of-day/sync`
 
 ## Recommended deployment model
 
@@ -89,6 +90,7 @@ docker run --rm -p 8765:8765 `
 8. Verify:
    - `https://api.usfieldops.com/api/health`
    - `https://api.usfieldops.com/api/state`
+   - `POST https://api.usfieldops.com/api/notion/end-of-day/sync`
 
 ## Required hosted environment variables
 
@@ -103,6 +105,9 @@ Baseline:
 - `FIELDOPS_SERVE_FRONTEND=false`
 - `FIELDOPS_RELOAD=false`
 - `FIELDOPS_DATA_DIR=/data`
+- `FIELDOPS_NOTION_TOKEN=<your notion integration token>`
+- `FIELDOPS_NOTION_DAILY_LOG_DB_ID=45e1e6f0-312d-454c-bd97-1edef917c2d5`
+- `FIELDOPS_NOTION_MISSION_LEDGER_DB_ID=6c5f623f-d7b0-46da-8e83-85fa7d474693`
 
 ## Required hosted secrets/files
 

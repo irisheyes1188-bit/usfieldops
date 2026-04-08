@@ -34,6 +34,9 @@ class FieldOpsConfig:
     allowed_origins: list[str]
     serve_frontend: bool
     reload: bool
+    notion_token: str
+    notion_daily_log_db_id: str
+    notion_mission_ledger_db_id: str
 
 
 def load_config() -> FieldOpsConfig:
@@ -52,4 +55,13 @@ def load_config() -> FieldOpsConfig:
         allowed_origins=_parse_allowed_origins(os.getenv("FIELDOPS_ALLOWED_ORIGINS")),
         serve_frontend=_parse_bool(os.getenv("FIELDOPS_SERVE_FRONTEND"), True),
         reload=_parse_bool(os.getenv("FIELDOPS_RELOAD"), False),
+        notion_token=os.getenv("FIELDOPS_NOTION_TOKEN", "").strip(),
+        notion_daily_log_db_id=os.getenv(
+            "FIELDOPS_NOTION_DAILY_LOG_DB_ID",
+            "45e1e6f0-312d-454c-bd97-1edef917c2d5",
+        ).strip(),
+        notion_mission_ledger_db_id=os.getenv(
+            "FIELDOPS_NOTION_MISSION_LEDGER_DB_ID",
+            "6c5f623f-d7b0-46da-8e83-85fa7d474693",
+        ).strip(),
     )

@@ -97,6 +97,9 @@ Important runtime variables:
 - optional `FIELDOPS_CREDENTIALS_PATH`
 - optional `FIELDOPS_GMAIL_TOKEN_PATH`
 - optional `FIELDOPS_CALENDAR_TOKEN_PATH`
+- `FIELDOPS_NOTION_TOKEN`
+- `FIELDOPS_NOTION_DAILY_LOG_DB_ID`
+- `FIELDOPS_NOTION_MISSION_LEDGER_DB_ID`
 
 ### Hosted deployment checklist
 
@@ -114,6 +117,7 @@ Important runtime variables:
    - `POST /api/state`
    - `POST /api/missions/{id}/process`
    - `GET /api/notion/end-of-day`
+   - `POST /api/notion/end-of-day/sync`
 
 ### Current limitation
 

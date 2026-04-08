@@ -149,3 +149,13 @@ class NotionEndOfDayPayload(BaseModel):
     completed_tasks: list[dict[str, Any]] = Field(default_factory=list)
     carry_forward_items: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[NotionArtifact] = Field(default_factory=list)
+
+
+class NotionSyncResult(BaseModel):
+    ok: bool
+    date: str
+    daily_log_page_id: str = ""
+    mission_pages_created: int = 0
+    mission_pages_updated: int = 0
+    completed_missions_considered: int = 0
+    message: str = ""

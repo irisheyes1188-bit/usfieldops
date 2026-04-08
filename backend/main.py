@@ -9,7 +9,7 @@ from pathlib import Path
 
 from config import load_config
 from models import AppState
-from notion_sync import build_end_of_day_payload
+from notion_sync import NotionSyncError, build_end_of_day_payload, sync_end_of_day_to_notion
 from runner import (
     build_action_result,
     build_empty_payload_result,
@@ -95,6 +95,16 @@ class Handler(BaseHTTPRequestHandler):
             state = AppState.model_validate(self.read_json())
             saved = save_state(state)
             self.send_json({"ok": True, "state": saved.model_dump(mode="json")})
+            return
+        if path == "/api/notion/end-of-day/sync":
+            day = self.path.split("date=", 1)[1] if "date=" in self.path else None
+            payload = build_end_of_day_payload(load_state(), date_str=day)
+            try:
+                result = sync_end_of_day_to_notion(payload)
+            except NotionSyncError as exc:
+                self.send_json({"error": str(exc)}, 500)
+                return
+            self.send_json(result.model_dump(mode="json"))
             return
         if re.match(r"^/api/missions/[^/]+/process$", path):
             mission_id = path.split("/")[-2]
