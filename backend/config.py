@@ -58,10 +58,10 @@ def load_config() -> FieldOpsConfig:
         notion_token=os.getenv("FIELDOPS_NOTION_TOKEN", "").strip(),
         notion_daily_log_db_id=os.getenv(
             "FIELDOPS_NOTION_DAILY_LOG_DB_ID",
-            "45e1e6f0-312d-454c-bd97-1edef917c2d5",
+            "dc9bbfed-8219-4cb6-add4-89d1d6b89284",
         ).strip(),
         notion_mission_ledger_db_id=os.getenv(
             "FIELDOPS_NOTION_MISSION_LEDGER_DB_ID",
-            "6c5f623f-d7b0-46da-8e83-85fa7d474693",
+            "777768e7-1d47-4dd7-8411-f575dbd551b5",
         ).strip(),
     )
