@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: fieldops-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: FIELDOPS_ENV
+        value: production
+      - key: FIELDOPS_HOST
+        value: 0.0.0.0
+      - key: FIELDOPS_PUBLIC_APP_URL
+        value: https://usfieldops.com
+      - key: FIELDOPS_API_BASE_URL
+        value: https://api.usfieldops.com/api
+      - key: FIELDOPS_ALLOWED_ORIGINS
+        value: https://usfieldops.com,https://www.usfieldops.com
+      - key: FIELDOPS_SERVE_FRONTEND
+        value: "false"
+      - key: FIELDOPS_RELOAD
+        value: "false"
+      - key: FIELDOPS_DATA_DIR
+        value: /data
+      - key: FIELDOPS_CREDENTIALS_PATH
+        value: /etc/secrets/credentials.json
+      - key: FIELDOPS_GMAIL_TOKEN_PATH
+        value: /etc/secrets/token.json
+      - key: FIELDOPS_CALENDAR_TOKEN_PATH
+        value: /etc/secrets/calendar_token.json
+    disk:
+      name: fieldops-data
+      mountPath: /data
+      sizeGB: 1
