@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DATA_DIR = Path(
+    os.environ.get("FIELDOPS_DATA_DIR") or (BASE_DIR / "data")
+)
 CREDENTIALS_PATH = Path(
     os.environ.get("FIELDOPS_CREDENTIALS_PATH") or (BASE_DIR / "credentials.json")
 )
-TOKEN_PATH = Path(
+SOURCE_TOKEN_PATH = Path(
     os.environ.get("FIELDOPS_CALENDAR_TOKEN_PATH") or (BASE_DIR / "calendar_token.json")
 )
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
@@ -22,6 +26,16 @@ class CalendarAuthRequiredError(RuntimeError):
 
 class CalendarDependencyError(RuntimeError):
     pass
+
+
+def _runtime_token_path() -> Path:
+    if SOURCE_TOKEN_PATH.parent.as_posix().startswith("/etc/secrets"):
+        RUNTIME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        runtime_token = RUNTIME_DATA_DIR / SOURCE_TOKEN_PATH.name
+        if SOURCE_TOKEN_PATH.exists() and not runtime_token.exists():
+            shutil.copyfile(SOURCE_TOKEN_PATH, runtime_token)
+        return runtime_token
+    return SOURCE_TOKEN_PATH
 
 
 def _require_google_libs():
@@ -40,23 +54,24 @@ def _require_google_libs():
 
 def get_calendar_credentials(interactive: bool = False):
     Request, Credentials, InstalledAppFlow, _ = _require_google_libs()
+    token_path = _runtime_token_path()
 
     creds = None
-    if TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
 
     if creds and creds.valid:
         return creds
 
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+        token_path.write_text(creds.to_json(), encoding="utf-8")
         return creds
 
     if not interactive:
         raise CalendarAuthRequiredError(
             f"Google Calendar OAuth authorization is required. Save your desktop OAuth client as "
-            f"{CREDENTIALS_PATH} and run authorize_calendar.py to create {TOKEN_PATH}."
+            f"{CREDENTIALS_PATH} and run authorize_calendar.py to create {token_path}."
         )
 
     if not CREDENTIALS_PATH.exists():
@@ -67,7 +82,7 @@ def get_calendar_credentials(interactive: bool = False):
 
     flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_PATH), SCOPES)
     creds = flow.run_local_server(port=0, open_browser=True)
-    TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+    token_path.write_text(creds.to_json(), encoding="utf-8")
     return creds
 
 
