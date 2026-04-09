@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import os
 import shutil
 from pathlib import Path
@@ -130,3 +130,71 @@ def create_calendar_event(
         "calendar_id": calendar_id,
         "timezone": timezone_str,
     }
+
+
+def list_upcoming_events(
+    *,
+    calendar_id: str = "primary",
+    limit: int = 10,
+    days_ahead: int = 7,
+) -> list[dict[str, Any]]:
+    service = build_calendar_service(interactive=False)
+    now_utc = datetime.now(timezone.utc)
+    max_utc = now_utc + timedelta(days=max(days_ahead, 1))
+    response = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=now_utc.isoformat(),
+            timeMax=max_utc.isoformat(),
+            maxResults=max(limit, 1),
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+    items = response.get("items", []) or []
+    events: list[dict[str, Any]] = []
+    for item in items:
+        start_info = item.get("start") or {}
+        end_info = item.get("end") or {}
+        start_dt = (start_info.get("dateTime") or "").strip()
+        end_dt = (end_info.get("dateTime") or "").strip()
+        all_day_date = (start_info.get("date") or "").strip()
+        end_day_date = (end_info.get("date") or "").strip()
+        is_all_day = bool(all_day_date and not start_dt)
+        date_value = ""
+        start_value: str | None = None
+        end_value: str | None = None
+        if is_all_day:
+            date_value = all_day_date
+        else:
+            try:
+                start_obj = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
+                date_value = start_obj.date().isoformat()
+                start_value = start_obj.strftime("%H:%M")
+            except ValueError:
+                continue
+            if end_dt:
+                try:
+                    end_obj = datetime.fromisoformat(end_dt.replace("Z", "+00:00"))
+                    end_value = end_obj.strftime("%H:%M")
+                except ValueError:
+                    end_value = None
+        if not date_value:
+            continue
+        events.append(
+            {
+                "eventId": str(item.get("id") or ""),
+                "source": "calendar_live",
+                "date": date_value,
+                "start": start_value,
+                "end": end_value,
+                "title": str(item.get("summary") or "Calendar Event"),
+                "loc": str(item.get("location") or ""),
+                "dot": "#00c8ff",
+                "desc": str(item.get("description") or ""),
+                "allDay": is_all_day,
+            }
+        )
+    return events

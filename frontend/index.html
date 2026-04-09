@@ -725,6 +725,7 @@ var API_BASE = resolveApiBase();
 var saveTimer = null;
 var isHydrating = false;
 var dispatchingMissionIds = {};
+var calendarRefreshTimer = null;
 
 // ══ TEMPLATES ═════════════════════════════════════════════
 var TEMPLATES = {
@@ -789,30 +790,56 @@ function toAgendaDateValue(dt){
 function toAgendaTimeValue(dt){
   return String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
 }
+function isHostedApi(){
+  return /^https?:\/\//i.test(API_BASE) && !/127\.0\.0\.1|localhost/i.test(API_BASE);
+}
+function backendLabel(){
+  return isHostedApi() ? 'Hosted Backend' : 'Local Backend';
+}
 function missionToCalendarEvent(mission){
   if(!mission||mission.actionType!=='calendar_create_event')return null;
-  var details=mission.actionDetails||{};
-  if(!details.event_id||!details.start)return null;
-  var startDt=new Date(details.start);
+  var details=mission.actionDetails||(mission.mockResult&&mission.mockResult.action_details)||{};
+  var eventId=details.event_id||details.eventId||'';
+  var startValue=details.start||details.start_local||'';
+  var endValue=details.end||details.end_local||'';
+  if((!startValue||!eventId) && mission.resultBody){
+    var startMatch=mission.resultBody.match(/^\s*Start:\s*(.+)$/im);
+    var endMatch=mission.resultBody.match(/^\s*End:\s*(.+)$/im);
+    if(startMatch&&!startValue)startValue=startMatch[1].trim();
+    if(endMatch&&!endValue)endValue=endMatch[1].trim();
+  }
+  if(!eventId||!startValue)return null;
+  var startDt=new Date(startValue);
   if(isNaN(startDt.getTime()))return null;
-  var endDt=details.end?new Date(details.end):null;
+  var endDt=endValue?new Date(endValue):null;
   return {
-    eventId: details.event_id,
+    eventId: eventId,
     source: 'mission_action',
     sourceMissionId: mission.id,
     date: toAgendaDateValue(startDt),
     start: toAgendaTimeValue(startDt),
     end: endDt&&!isNaN(endDt.getTime())?toAgendaTimeValue(endDt):null,
-    title: details.title||mission.title||'Calendar Event',
-    loc: details.calendar_id==='primary'?'Primary Calendar':(details.calendar_id||''),
+    title: details.title||details.summary||mission.title||'Calendar Event',
+    loc: details.location||(details.calendar_id==='primary'?'Primary Calendar':(details.calendar_id||'')),
     dot: '#00c8ff',
-    desc: mission.objective||'Created via FieldOps mission dispatch',
+    desc: details.description||mission.objective||'Created via FieldOps mission dispatch',
     allDay: false
   };
 }
+function isFutureAgendaEvent(event){
+  if(!event||!event.date)return false;
+  var startText=(event.start||'00:00');
+  var dt=new Date(event.date+'T'+startText);
+  if(isNaN(dt.getTime()))dt=new Date(event.date+'T00:00:00');
+  if(isNaN(dt.getTime()))return false;
+  return dt.getTime() >= Date.now();
+}
 function syncCalendarEventsFromMissions(){
   var missionEvents=[].concat(missions||[],completedMissions||[]).map(missionToCalendarEvent).filter(Boolean);
-  var preserved=(CALENDAR_EVENTS||[]).filter(function(e){return !(e&&e.source==='mission_action');});
+  var preserved=(CALENDAR_EVENTS||[]).filter(function(e){
+    if(!(e&&e.source==='mission_action'))return true;
+    return isFutureAgendaEvent(e);
+  });
   var seen={};
   preserved.forEach(function(e){
     if(e&&e.eventId)seen[e.eventId]=true;
@@ -863,12 +890,31 @@ function scheduleStateSave(){
   if(saveTimer)clearTimeout(saveTimer);
   saveTimer=setTimeout(saveStateNow,250);
 }
+async function refreshLiveCalendarFeed(){
+  try{
+    var data = await apiFetch('/calendar/upcoming?limit=12&days=7');
+    if(!data||!Array.isArray(data.events))return;
+    var preserved=(CALENDAR_EVENTS||[]).filter(function(e){
+      return !(e&&e.source==='calendar_live');
+    });
+    data.events.forEach(function(e){preserved.push(e);});
+    CALENDAR_EVENTS=preserved;
+    syncCalendarEventsFromMissions();
+    renderAgenda();
+    updateSnap();
+  }catch(e){}
+}
+function startCalendarRefreshLoop(){
+  if(calendarRefreshTimer)clearInterval(calendarRefreshTimer);
+  calendarRefreshTimer=setInterval(refreshLiveCalendarFeed,300000);
+}
 async function loadStateFromBackend(){
   isHydrating = true;
   try{
     var state = await apiFetch('/state');
     applyAppState(state);
-    setBackendStatus('online','Backend Online','State loaded from '+API_BASE+'/state');
+    await refreshLiveCalendarFeed();
+    setBackendStatus('online',backendLabel(),'State loaded from '+API_BASE+'/state');
   }catch(e){
     setBackendStatus('offline','Backend Offline','Could not load '+API_BASE+'/state');
     showToast('Backend state load failed');
@@ -920,10 +966,11 @@ async function dispatchMission(id){
       nextMission.updatedAt = new Date().toISOString();
       upsertMission(nextMission);
       syncCalendarEventsFromMissions();
+      if(nextMission.actionType==='calendar_create_event')await refreshLiveCalendarFeed();
       setQFilterByName('waiting');
       updateCounts();renderQueue();renderAgenda();updateSnap();scheduleStateSave();
       var resultSummary=(data.result&&data.result.summary)||'Mission updated';
-      setBackendStatus('online','Local Backend',resultSummary);
+      setBackendStatus('online',backendLabel(),resultSummary);
       showToast(resultSummary+' — switched to WAITING');
     } else { throw new Error('No mission payload returned'); }
   }catch(e){
@@ -1866,6 +1913,7 @@ setBackendStatus('busy','Starting','Checking backend via '+API_BASE);
 showSection('queue');
 await checkBackendHealth();
 await loadStateFromBackend();
+startCalendarRefreshLoop();
 renderAll();
 showToast('FieldOps local state ready');
 }

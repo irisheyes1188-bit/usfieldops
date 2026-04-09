@@ -50,6 +50,8 @@ class TaskItem(BaseModel):
 
 
 class AgendaEvent(BaseModel):
+    eventId: str = ""
+    source: str = ""
     date: str
     start: str | None = None
     end: str | None = None

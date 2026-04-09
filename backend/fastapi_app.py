@@ -10,6 +10,11 @@ from fastapi.staticfiles import StaticFiles
 from config import load_config
 from models import AppState
 from notion_sync import NotionSyncError, build_end_of_day_payload, sync_end_of_day_to_notion
+from calendar_oauth import (
+    CalendarAuthRequiredError,
+    CalendarDependencyError,
+    list_upcoming_events,
+)
 from runner import (
     build_action_result,
     build_empty_payload_result,
@@ -101,6 +106,20 @@ def health() -> dict:
 @app.get("/api/state")
 def get_state() -> dict:
     return load_state().model_dump(mode="json")
+
+
+@app.get("/api/calendar/upcoming")
+def get_calendar_upcoming(
+    limit: int = Query(default=10, ge=1, le=50),
+    days: int = Query(default=7, ge=1, le=30),
+) -> dict:
+    try:
+        events = list_upcoming_events(limit=limit, days_ahead=days)
+    except (CalendarAuthRequiredError, CalendarDependencyError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Calendar fetch failed: {exc}") from exc
+    return {"ok": True, "events": events}
 
 
 @app.post("/api/state")
