@@ -49,6 +49,22 @@ class TaskItem(BaseModel):
     carriedFrom: str = ""
 
 
+class ActivityItem(BaseModel):
+    id: str
+    title: str
+    owner: str = ""
+    lane: str = ""
+    type: str = "note"
+    status: str = "open"
+    timestamp: str = ""
+    location: str = ""
+    contact: str = ""
+    organization: str = ""
+    notes: str = ""
+    followUp: bool = False
+    createdAt: datetime | None = None
+
+
 class AgendaEvent(BaseModel):
     eventId: str = ""
     source: str = ""
@@ -97,6 +113,7 @@ class AppState(BaseModel):
     missions: list[Mission] = Field(default_factory=list)
     completedMissions: list[Mission] = Field(default_factory=list)
     myTasks: list[TaskItem] = Field(default_factory=list)
+    activityItems: list[ActivityItem] = Field(default_factory=list)
     archivedItems: list[ArchiveItem] = Field(default_factory=list)
     CALENDAR_EVENTS: list[AgendaEvent] = Field(default_factory=list)
     focus: FocusState = Field(default_factory=FocusState)

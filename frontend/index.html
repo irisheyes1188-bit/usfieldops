@@ -687,6 +687,7 @@ textarea.inp.tall{min-height:130px;}
 var missions = [];
 var completedMissions = [];
 var myTasks = [];
+var activityItems = [];
 var archivedItems = [];
 var CALENDAR_EVENTS = [];
 var criticalId = null;
@@ -761,6 +762,7 @@ function collectAppState(){
     missions: cloneJson(missions),
     completedMissions: cloneJson(completedMissions),
     myTasks: cloneJson(myTasks),
+    activityItems: cloneJson(activityItems),
     archivedItems: cloneJson(archivedItems),
     CALENDAR_EVENTS: cloneJson(CALENDAR_EVENTS),
     focus: {criticalId: criticalId, focusTextOnly: focusTextOnly},
@@ -772,6 +774,7 @@ function applyAppState(state){
   missions = Array.isArray(state.missions) ? state.missions : [];
   completedMissions = Array.isArray(state.completedMissions) ? state.completedMissions : [];
   myTasks = Array.isArray(state.myTasks) ? state.myTasks : [];
+  activityItems = Array.isArray(state.activityItems) ? state.activityItems : [];
   archivedItems = Array.isArray(state.archivedItems) ? state.archivedItems : [];
   CALENDAR_EVENTS = Array.isArray(state.CALENDAR_EVENTS) ? state.CALENDAR_EVENTS : [];
   criticalId = state.focus && typeof state.focus.criticalId !== 'undefined' ? state.focus.criticalId : null;
@@ -853,7 +856,7 @@ function syncCalendarEventsFromMissions(){
 }
 function renderAll(){
   syncCalendarEventsFromMissions();
-  renderQueue();renderTasks();renderTemplates();renderAgenda();renderDebrief();renderArchive();renderFocus();updateCounts();updateSnap();
+  renderQueue();renderTasks();renderActivity();renderTemplates();renderAgenda();renderDebrief();renderArchive();renderFocus();updateCounts();updateSnap();
 }
 function setBackendStatus(mode,text,detail){
   var el=document.getElementById('backendStatus');
@@ -997,7 +1000,7 @@ function copyText(text,msg){
 function closeModal(id){var el=document.getElementById(id);if(el)el.classList.remove('open');}
 
 // ══ NAV ═══════════════════════════════════════════════════
-var SECTIONS=['composer','queue','myops','agenda','templates','debrief','archive'];
+var SECTIONS=['composer','queue','myops','activity','agenda','templates','debrief','archive'];
 function showSection(id){
   SECTIONS.forEach(function(s){var el=document.getElementById('section-'+s);if(el)el.classList.remove('active');});
   var target=document.getElementById('section-'+id);if(target)target.classList.add('active');
@@ -1124,9 +1127,11 @@ function updateCounts(){
   var done=completedMissions.length;
   var doneTasks=myTasks.filter(function(t){return t.status==='done';}).length;
   var openTasks=myTasks.filter(function(t){return t.status!=='done';}).length;
+  var openActivities=activityItems.filter(function(a){return (a.status||'open')!=='closed';}).length;
   var qc=document.getElementById('queueCount');if(qc)qc.textContent=active.length;
   var dc=document.getElementById('debriefCount');if(dc)dc.textContent=done+doneTasks;
   var mc=document.getElementById('myopsCount');if(mc)mc.textContent=openTasks;
+  var act=document.getElementById('activityCount');if(act)act.textContent=openActivities;
   var ac=document.getElementById('archiveCount');if(ac)ac.textContent=archivedItems.length;
   var sh=document.getElementById('statHigh');if(sh)sh.textContent=high.length;
   var hs=document.getElementById('statHighSub');if(hs)hs.textContent=high.length?high.length+' need attention':'No critical missions';
@@ -1147,7 +1152,7 @@ function runUniversalParse(mode){
   var raw=document.getElementById('universalInputText').value.trim();
   if(!raw){showToast('Paste a block first.');return;}
   var lines=raw.split(/\r?\n/);
-  var loadedMissions=0,loadedTasks=0,loadedEvents=0,focusSet=false;
+  var loadedMissions=0,loadedTasks=0,loadedActivities=0,loadedEvents=0,focusSet=false;
   var warnings=[],unclassified=[];
 
   // STEP 1: Agenda events
@@ -1234,6 +1239,41 @@ function runUniversalParse(mode){
     });
   }
 
+  // STEP 2.5: Activity blocks
+  if(mode==='load' && /FIELDOPS ACTIVITY/i.test(raw)){
+    var activityBlocks=raw.split(/(?=FIELDOPS ACTIVITY)/i).filter(function(b){return /FIELDOPS ACTIVITY/i.test(b);});
+    activityBlocks.forEach(function(block){
+      var title='',owner='GUY',lane='',type='note',status='open',timestamp='',location='',contact='',organization='',notes='',followUp=false;
+      var noteLines=[],captureNotes=false;
+      block.split('\n').forEach(function(line){
+        var t=line.trim();
+        if(!t || /^FIELDOPS ACTIVITY$/i.test(t) || /^-{4,}$/.test(t))return;
+        if(/^Owner:/i.test(t)){owner=t.replace(/^Owner:\s*/i,'').trim().toUpperCase()||'GUY';}
+        else if(/^Title:/i.test(t)){title=t.replace(/^Title:\s*/i,'').trim();}
+        else if(/^Lane:/i.test(t)){var lm=t.match(/[lL]([1234])/);lane=lm?'l'+lm[1]:'';}
+        else if(/^Type:/i.test(t)){type=t.replace(/^Type:\s*/i,'').trim().toLowerCase()||'note';}
+        else if(/^Status:/i.test(t)){status=t.replace(/^Status:\s*/i,'').trim().toLowerCase()||'open';}
+        else if(/^Timestamp:/i.test(t)){timestamp=t.replace(/^Timestamp:\s*/i,'').trim();}
+        else if(/^Location:/i.test(t)){location=t.replace(/^Location:\s*/i,'').trim();}
+        else if(/^Contact:/i.test(t)){contact=t.replace(/^Contact:\s*/i,'').trim();}
+        else if(/^(?:Organization|Organisation):/i.test(t)){organization=t.replace(/^(?:Organization|Organisation):\s*/i,'').trim();}
+        else if(/^FOLLOW-UP:/i.test(t)){followUp=/yes|true|open|needed/i.test(t.replace(/^FOLLOW-UP:\s*/i,'')); captureNotes=false;}
+        else if(/^NOTES:/i.test(t)){var first=t.replace(/^NOTES:\s*/i,'').trim();noteLines=first?[first]:[];captureNotes=true;}
+        else if(captureNotes && !/^[A-Z][A-Za-z\- ]+:\s*/.test(t)){noteLines.push(t);}
+        else if(/^[A-Z][A-Za-z\- ]+:\s*/.test(t)){captureNotes=false;}
+      });
+      notes=noteLines.join(' ').trim();
+      if(!timestamp)timestamp=new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+      if(!title)title=(notes.split(/\s+/).slice(0,7).join(' ')||'Field Note').trim();
+      if(title){
+        activityItems.unshift({id:'A-'+Date.now()+'-'+loadedActivities,title:title,owner:owner,lane:lane,type:type,status:status,timestamp:timestamp,location:location,contact:contact,organization:organization,notes:notes,followUp:followUp,createdAt:new Date().toISOString()});
+        loadedActivities++;
+      }else{
+        warnings.push('FIELDOPS ACTIVITY block missing Title: or NOTES: content');
+      }
+    });
+  }
+
   // STEP 3: Mission blocks
   var rawUpper=raw.toUpperCase();
   var hasMissionMarker=/FIELDOPS MISSION DISPATCH|MISSION DISPATCH/.test(rawUpper);
@@ -1250,6 +1290,9 @@ function runUniversalParse(mode){
       var title='',agent='chuck',missionClass='',actionType='',sourceContext='',parentMissionId='',lane='',priority='normal',obj='',inp='',out='',carry=false;
       var blockHasMission=false,blockHasAgent=false;
       var objLines=[],inputLines=[],outLines=[],captureMode='';
+      function isFieldHeaderLine(text){
+        return /^(?:[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)*|[A-Z][A-Za-z]+(?: [a-z][A-Za-z]+)*)\s*:\s*/.test(text);
+      }
       block.split('\n').forEach(function(l){
         var t=l.trim();
         if(/^Mission:/i.test(t)){title=t.replace(/^Mission:\s*/i,'').trim();blockHasMission=true;captureMode='';}
@@ -1264,10 +1307,10 @@ function runUniversalParse(mode){
         else if(/^INPUTS:/i.test(t)){inputLines=[t.replace(/^INPUTS:\s*/i,'').trim()];captureMode='inp';}
         else if(/^(?:EXPECTED OUTPUT|OUTPUT):/i.test(t)){outLines=[t.replace(/^(?:EXPECTED OUTPUT|OUTPUT):\s*/i,'').trim()];captureMode='out';}
         else if(/carry/i.test(t)&&t.length<30){carry=true;}
-        else if(t&&captureMode==='obj'&&!/^[A-Z][a-z]+:\s/.test(t)&&!t.match(/^-{4,}/)){objLines.push(t);}
-        else if(t&&captureMode==='inp'&&!/^(?:EXPECTED OUTPUT|OUTPUT):/i.test(t)&&!t.match(/^-{4,}/)){inputLines.push(t);}
-        else if(t&&captureMode==='out'&&!/^[A-Z][a-z]+:\s/.test(t)&&!t.match(/^-{4,}/)){outLines.push(t);}
-        else if(t&&/^[A-Z][a-z]+:\s/.test(t)){captureMode='';}
+        else if(t&&captureMode==='obj'&&!isFieldHeaderLine(t)&&!t.match(/^-{4,}/)){objLines.push(t);}
+        else if(t&&captureMode==='inp'&&!/^(?:EXPECTED OUTPUT|OUTPUT):/i.test(t)&&!t.match(/^-{4,}/)&&!/^DELIVERY:/i.test(t)&&!/^ARTIFACTS:/i.test(t)&&!/^REPORTING:/i.test(t)){inputLines.push(t);}
+        else if(t&&captureMode==='out'&&!isFieldHeaderLine(t)&&!t.match(/^-{4,}/)){outLines.push(t);}
+        else if(t&&isFieldHeaderLine(t)){captureMode='';}
       });
       obj=objLines.join(' ').trim();inp=inputLines.join('\n').trim();out=outLines.join(' ').trim();
       var priMap={low:'low',normal:'normal',high:'high',critical:'critical'};priority=priMap[priority]||'normal';
@@ -1319,7 +1362,7 @@ function runUniversalParse(mode){
 
   // STEP 5: Unclassified
   var knownPats=[/^EVENT\s*\|/i,/^ALLDAY\s*\|/i,/^\[(TODO|INPROGRESS|IN PROGRESS|WAITING|CARRY|DONE)\]/i,
-    /^(Agent|Mission|Priority|Lane|Date|Objective|Output|Input|Source|Owner|Task|Status|FIELDOPS|HIGHLIGHTED|CRITICAL|AGENDA|MY OPS|TASKS|QUEUE|MORNING|DEBRIEF|CARRY FORWARD|---)/i,/^[-=*#\s]*$/,/^\d+\./];
+    /^(Agent|Mission|Priority|Lane|Date|Objective|Output|Input|Source|Owner|Task|Status|Title|Type|Timestamp|Location|Contact|Organization|Organisation|Notes|Follow-Up|FIELDOPS|HIGHLIGHTED|CRITICAL|AGENDA|MY OPS|TASKS|QUEUE|MORNING|DEBRIEF|CARRY FORWARD|---)/i,/^[-=*#\s]*$/,/^\d+\./];
   lines.forEach(function(line){
     var l=line.trim();if(!l)return;
     var known=knownPats.some(function(rx){return rx.test(l);});
@@ -1330,7 +1373,7 @@ function runUniversalParse(mode){
     }
   });
 
-  updateCounts();renderQueue();renderTasks();renderDebrief();
+  updateCounts();renderQueue();renderTasks();renderActivity();renderDebrief();
 
   // Report
   var rpt=document.getElementById('universalParseReport');
@@ -1338,6 +1381,7 @@ function runUniversalParse(mode){
   var warn=document.getElementById('universalReportWarnings');
   var unc=document.getElementById('universalReportUnclassified');
   var loadLines=[];
+  if(loadedActivities)loadLines.push('Activity loaded: '+loadedActivities);
   if(loadedMissions)loadLines.push('✓ '+loadedMissions+' mission'+(loadedMissions>1?'s':'')+' → Queue');
   if(loadedTasks)loadLines.push('✓ '+loadedTasks+' task'+(loadedTasks>1?'s':'')+' → My Ops');
   if(loadedEvents)loadLines.push('✓ '+loadedEvents+' event'+(loadedEvents>1?'s':'')+' → Agenda');
@@ -1348,7 +1392,7 @@ function runUniversalParse(mode){
   if(unclassified.length&&unc){unc.style.display='block';unc.textContent='Unclassified ('+unclassified.length+'):\n'+unclassified.map(function(u){return '— '+u;}).join('\n');}else if(unc)unc.style.display='none';
   if(rpt)rpt.style.display='block';
   scheduleStateSave();
-  var total=loadedMissions+loadedTasks+loadedEvents+(focusSet?1:0);
+  var total=loadedMissions+loadedTasks+loadedActivities+loadedEvents+(focusSet?1:0);
   if(total)showToast('Loaded '+total+' item'+(total>1?'s':'')+' ✓');
 }
 
@@ -1517,6 +1561,134 @@ function renderTasks(){
     var delBtn=document.createElement('button');delBtn.className='btn btn-danger btn-sm';delBtn.textContent='X';
     delBtn.addEventListener('click',(function(id){return function(){deleteTask(id);};})(t.id));
     actions.appendChild(delBtn);
+    body.appendChild(actions);card.appendChild(body);list.appendChild(card);
+  });
+}
+function ensureActivityUi(){
+  var navBar=document.querySelector('.nav-bar');
+  if(navBar&&!document.getElementById('activityCount')){
+    var agendaBtn=Array.from(navBar.querySelectorAll('.nav-tab')).find(function(btn){
+      return btn.getAttribute('onclick')==="showSection('agenda')";
+    });
+    var btn=document.createElement('button');
+    btn.className='nav-tab';
+    btn.setAttribute('onclick',"showSection('activity')");
+    btn.innerHTML='Activity <span class="mc" id="activityCount">0</span>';
+    if(agendaBtn)navBar.insertBefore(btn,agendaBtn);else navBar.appendChild(btn);
+  }
+  if(document.getElementById('section-activity'))return;
+  var myOps=document.getElementById('section-myops');
+  if(!myOps||!myOps.parentNode)return;
+  var section=document.createElement('div');
+  section.className='section';
+  section.id='section-activity';
+  section.innerHTML=''
+    +'<div class="section-header">'
+    +'<div><div class="section-title">Activity Tracker</div><div class="section-sub">Field notes · leads · intel drops · fast capture</div></div>'
+    +'<div style="display:flex;gap:7px">'
+    +'<button class="btn btn-purple btn-sm" onclick="openUniversalInput()">â¬‡ Agent Input</button>'
+    +'<button class="btn btn-primary btn-sm" onclick="toggleAddActivity()">+ Add Activity</button>'
+    +'</div></div>'
+    +'<div class="add-task-form" id="addActivityForm" style="display:none">'
+    +'<div style="display:grid;grid-template-columns:1.2fr .8fr;gap:9px">'
+    +'<div class="field"><label class="lbl">Title</label><input class="inp" id="aTitle" type="text" placeholder="e.g. Possible L2 lead from event"/></div>'
+    +'<div class="field"><label class="lbl">Type</label><select class="inp" id="aType"><option value="note">Note</option><option value="lead">Lead</option><option value="contact">Contact</option><option value="intel">Intel</option><option value="followup">Follow-Up</option></select></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px">'
+    +'<div class="field"><label class="lbl">Owner</label><input class="inp" id="aOwner" type="text" value="GUY" placeholder="GUY"/></div>'
+    +'<div class="field"><label class="lbl">Lane</label><select class="inp" id="aLane"><option value="">General Ops</option><option value="l1">L1 â€” NEEA</option><option value="l2">L2 â€” NWE</option><option value="l3">L3 â€” IECC</option><option value="l4">L4 â€” NCAT</option></select></div>'
+    +'<div class="field"><label class="lbl">Location</label><input class="inp" id="aLocation" type="text" placeholder="onsite / event / call"/></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px">'
+    +'<div class="field"><label class="lbl">Contact</label><input class="inp" id="aContact" type="text" placeholder="person name"/></div>'
+    +'<div class="field"><label class="lbl">Organization</label><input class="inp" id="aOrganization" type="text" placeholder="company / org"/></div>'
+    +'</div>'
+    +'<div class="field"><label class="lbl">Notes</label><textarea class="inp" id="aNotes" placeholder="Drop quick field notes, lead intel, or things you do not want to lose..."></textarea></div>'
+    +'<div style="display:flex;align-items:center;gap:9px;margin-top:4px"><input type="checkbox" id="aFollowUp" style="width:15px;height:15px;cursor:pointer;accent-color:var(--orange)"/><label for="aFollowUp" style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--lo);cursor:pointer">Follow-Up Needed</label></div>'
+    +'<div class="btn-row"><button class="btn btn-green btn-sm" onclick="addActivity()">+ Save Activity</button><button class="btn btn-ghost btn-sm" onclick="toggleAddActivity()">Cancel</button></div>'
+    +'</div>'
+    +'<div id="activityList"><div class="empty-q">No activity logged yet.<br>Use quick capture or paste a FIELDOPS ACTIVITY block from the field.</div></div>';
+  myOps.parentNode.insertBefore(section,myOps.nextSibling);
+}
+function toggleAddActivity(){
+  var f=document.getElementById('addActivityForm');
+  if(f)f.style.display=f.style.display==='none'?'block':'none';
+}
+function addActivity(){
+  var notes=(document.getElementById('aNotes')||{}).value||'';
+  var title=((document.getElementById('aTitle')||{}).value||'').trim();
+  if(!title){title=(notes.trim().split(/\s+/).slice(0,7).join(' ')||'Field Note').trim();}
+  if(!title){showToast('Activity title or notes required.');return;}
+  activityItems.unshift({
+    id:'A-'+Date.now(),
+    title:title,
+    owner:(((document.getElementById('aOwner')||{}).value||'GUY').trim()||'GUY').toUpperCase(),
+    lane:((document.getElementById('aLane')||{}).value||'').trim(),
+    type:((document.getElementById('aType')||{}).value||'note').trim(),
+    status:'open',
+    timestamp:new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),
+    location:((document.getElementById('aLocation')||{}).value||'').trim(),
+    contact:((document.getElementById('aContact')||{}).value||'').trim(),
+    organization:((document.getElementById('aOrganization')||{}).value||'').trim(),
+    notes:notes.trim(),
+    followUp:!!((document.getElementById('aFollowUp')||{}).checked),
+    createdAt:new Date().toISOString()
+  });
+  ['aTitle','aNotes','aLocation','aContact','aOrganization'].forEach(function(id){var el=document.getElementById(id);if(el)el.value='';});
+  var ownerEl=document.getElementById('aOwner');if(ownerEl)ownerEl.value='GUY';
+  var laneEl=document.getElementById('aLane');if(laneEl)laneEl.value='';
+  var typeEl=document.getElementById('aType');if(typeEl)typeEl.value='note';
+  var fuEl=document.getElementById('aFollowUp');if(fuEl)fuEl.checked=false;
+  updateCounts();renderActivity();scheduleStateSave();showToast('Activity logged');
+}
+function deleteActivity(id){
+  activityItems=activityItems.filter(function(a){return a.id!==id;});
+  updateCounts();renderActivity();scheduleStateSave();showToast('Activity removed.');
+}
+function promoteActivityToTask(id){
+  var a=activityItems.find(function(x){return x.id===id;});if(!a)return;
+  myTasks.push({id:'T-'+Date.now(),title:a.title,priority:a.followUp?'high':'normal',lane:a.lane||'',due:'',status:'todo',carry:false,createdAt:new Date().toISOString()});
+  updateCounts();renderTasks();scheduleStateSave();showToast('Activity promoted to task');
+}
+function promoteActivityToMission(id){
+  var a=activityItems.find(function(x){return x.id===id;});if(!a)return;
+  document.getElementById('cTitle').value=a.title||'FieldOps Follow-Up';
+  document.getElementById('cPriority').value=a.followUp?'high':'normal';
+  document.getElementById('cLane').value=a.lane||'';
+  document.getElementById('cObjective').value=a.notes||a.title||'';
+  showSection('composer');showToast('Activity promoted to Composer');
+}
+function renderActivity(){
+  var list=document.getElementById('activityList');if(!list)return;
+  if(!activityItems.length){list.innerHTML='<div class="empty-q">No activity logged yet.<br>Use quick capture or paste a FIELDOPS ACTIVITY block from the field.</div>';return;}
+  list.innerHTML='';
+  activityItems.forEach(function(a){
+    var card=document.createElement('div');card.className='task-card';
+    var marker=document.createElement('div');
+    marker.style.cssText='width:10px;min-width:10px;border-radius:999px;background:'+(a.followUp?'var(--orange)':'var(--accent)')+';margin-top:5px;';
+    card.appendChild(marker);
+    var body=document.createElement('div');body.className='task-body';
+    var titleEl=document.createElement('div');titleEl.className='task-title';titleEl.textContent=a.title;body.appendChild(titleEl);
+    var meta=document.createElement('div');meta.className='task-meta';
+    meta.innerHTML='<span class="badge badge-'+(a.lane||'carry')+'">'+esc((a.lane||a.type||'note').toUpperCase())+'</span>'
+      +'<span class="badge badge-'+((a.followUp||a.type==='lead')?'high':'normal')+'">'+esc((a.type||'note').toUpperCase())+'</span>'
+      +(a.owner?'<span class="badge" style="color:var(--mid);border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.04)">'+esc(a.owner)+'</span>':'')
+      +(a.timestamp?'<span style="font-family:var(--mono);font-size:9px;color:var(--lo)">'+esc(a.timestamp)+'</span>':'')
+      +(a.followUp?'<span style="color:var(--orange);font-family:var(--mono);font-size:9px">Follow-Up</span>':'');
+    body.appendChild(meta);
+    var detailBits=[];
+    if(a.contact)detailBits.push('Contact: '+a.contact);
+    if(a.organization)detailBits.push('Org: '+a.organization);
+    if(a.location)detailBits.push('Location: '+a.location);
+    if(detailBits.length){var meta2=document.createElement('div');meta2.className='m-obj';meta2.textContent=detailBits.join(' · ');body.appendChild(meta2);}
+    if(a.notes){var notesEl=document.createElement('div');notesEl.className='m-obj';notesEl.style.marginTop='6px';notesEl.textContent=a.notes;body.appendChild(notesEl);}
+    var actions=document.createElement('div');actions.className='task-actions';
+    var tBtn=document.createElement('span');tBtn.style.cssText='font-family:var(--mono);font-size:8px;color:var(--green);border:1px solid rgba(61,220,132,.3);border-radius:3px;padding:1px 6px;cursor:pointer;background:rgba(61,220,132,.06);';tBtn.textContent='> To Task';
+    tBtn.addEventListener('click',(function(id){return function(){promoteActivityToTask(id);};})(a.id));actions.appendChild(tBtn);
+    var mBtn=document.createElement('span');mBtn.style.cssText='font-family:var(--mono);font-size:8px;color:var(--purple);border:1px solid rgba(168,85,247,.3);border-radius:3px;padding:1px 6px;cursor:pointer;background:rgba(168,85,247,.06);';mBtn.textContent='> To Mission';
+    mBtn.addEventListener('click',(function(id){return function(){promoteActivityToMission(id);};})(a.id));actions.appendChild(mBtn);
+    var delBtn=document.createElement('button');delBtn.className='btn btn-danger btn-sm';delBtn.textContent='X';
+    delBtn.addEventListener('click',(function(id){return function(){deleteActivity(id);};})(a.id));actions.appendChild(delBtn);
     body.appendChild(actions);card.appendChild(body);list.appendChild(card);
   });
 }
@@ -1901,6 +2073,7 @@ window.addEventListener('beforeunload',function(){saveStateNow();});
 // ══ INIT ══════════════════════════════════════════════════
 async function startApp(){
 hdr=document.getElementById('foHeader');
+ensureActivityUi();
 buildStars();
 buildPrecip();
 setInterval(tick,1000);tick();
