@@ -72,7 +72,15 @@ TITLE_HINTS = (
     "operations manager",
     "facilities manager",
     "facility manager",
+    "service manager",
+    "service director",
+    "estimator",
+    "estimating manager",
+    "project executive",
+    "project engineer",
+    "superintendent",
     "office manager",
+    "office administrator",
     "program manager",
     "compliance manager",
     "regional manager",
@@ -86,6 +94,11 @@ DEPARTMENT_HINTS = (
     ("engineering", "Engineering"),
     ("capital projects", "Capital Projects"),
     ("construction", "Construction"),
+    ("service", "Service"),
+    ("estimating", "Estimating"),
+    ("estimator", "Estimating"),
+    ("project management", "Project Management"),
+    ("project manager", "Project Management"),
     ("administration", "Administration"),
     ("finance", "Finance"),
     ("office", "Administrative Office"),
@@ -207,18 +220,32 @@ ENTITY_PROFILES = {
         "label": "Contractor / builder / trades business",
         "query_variants": (
             "owner",
+            "president",
             "principal",
             "project manager",
             "operations manager",
             "estimating",
+            "estimator",
+            "service manager",
             "office manager",
             "leadership",
             "contact",
         ),
-        "link_hints": ("about", "team", "leadership", "projects", "services", "contact"),
-        "role_boost_terms": ("owner", "principal", "project manager", "operations manager", "office manager"),
-        "department_boost_terms": ("operations", "construction", "administrative office"),
-        "strategy_summary": "Favor owners, project managers, operations leaders, and office routing over board/governance sources.",
+        "link_hints": ("about", "team", "leadership", "projects", "services", "contact", "contact-us"),
+        "role_boost_terms": (
+            "owner",
+            "president",
+            "principal",
+            "project manager",
+            "operations manager",
+            "service manager",
+            "estimator",
+            "estimating",
+            "office manager",
+            "office administrator",
+        ),
+        "department_boost_terms": ("operations", "construction", "service", "estimating", "project management", "administrative office"),
+        "strategy_summary": "Favor owners, presidents, project/service/estimating leaders, and office routing over board/governance sources.",
     },
     "retail_multi_site": {
         "label": "Retail / multi-site operator",
@@ -692,6 +719,7 @@ def _normalize_candidate_name(name: str) -> str:
 
 def _normalize_role_text(role: str) -> str:
     role_clean = re.sub(r"\s+", " ", role).strip(" -\u2013\u2014")
+    role_clean = re.sub(r"\s+at\s+.+$", "", role_clean, flags=re.I)
     role_clean = re.sub(
         r"\s+[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)?$",
         "",
@@ -781,9 +809,11 @@ def _extract_department_routes(
     *,
     source_url: str,
     source_type: str,
+    profile_key: str,
 ) -> list[dict]:
     candidates: list[dict] = []
     lowered = text.lower()
+    profile = _profile_config(profile_key)
     desired_tokens = {
         token.lower()
         for token in re.split(r"[^a-zA-Z]+", desired_contact_type or "")
@@ -797,6 +827,9 @@ def _extract_department_routes(
         if desired_tokens and any(token in keyword for token in desired_tokens):
             confidence = "High"
             reason = f"Public page text references {label.lower()}, which aligns to the requested contact type."
+        elif any(term in label.lower() for term in profile.get("department_boost_terms", ())):
+            confidence = "High"
+            reason = f"Public page text references {label.lower()}, which aligns to the {profile['label'].lower()} strategy."
         candidates.append(
             {
                 "department": label,
@@ -853,6 +886,10 @@ def _supports_for_page(page: FetchedPage) -> str:
         return "Public business registration signal"
     if page.source_type == "official_registry":
         return "Official public registry signal"
+    if "services" in lowered:
+        return "Public services or trade-scope information"
+    if "projects" in lowered:
+        return "Public project or portfolio information"
     if "board" in lowered or "trustee" in lowered or "governance" in lowered:
         return "Board or governance information"
     if "leadership" in lowered or "staff" in lowered or "team" in lowered or "directory" in lowered:
@@ -889,6 +926,10 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 1
     if any(token in role for token in profile.get("role_boost_terms", ())):
         score += 4
+    if profile_key == "contractor_builder" and source_type == "business_registry" and any(
+        token in role for token in ("owner", "president", "principal")
+    ):
+        score += 3
     return score
 
 
@@ -997,6 +1038,7 @@ def investigate_public_lead(
                 desired_contact_type,
                 source_url=page.url,
                 source_type=page.source_type,
+                profile_key=profile_key,
             )
         )
     candidates = _dedupe_role_candidates(all_candidates)
