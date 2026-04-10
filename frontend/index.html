@@ -697,6 +697,7 @@ var qFilter = 'all';
 var tFilter = 'all';
 var toastTimer = null;
 var editingId = null;
+var composerMissionMeta = {missionClass:'',actionType:'',sourceContext:'',parentMissionId:''};
 var hdr = null;
 function trimTrailingSlash(v){return (v||'').replace(/\/+$/,'');}
 function resolveApiBase(){
@@ -952,9 +953,10 @@ async function dispatchMission(id){
   dispatchingMissionIds[id]=true;
   mission.status='dispatched';
   mission.updatedAt=new Date().toISOString();
-  updateCounts();renderQueue();scheduleStateSave();
+  updateCounts();renderQueue();
   setBackendStatus('busy','Dispatching','Processing '+id+' via backend');
   try{
+    await saveStateNow();
     var data = await apiFetch('/missions/'+encodeURIComponent(id)+'/process',{method:'POST'});
     if(data){
       var nextMission = data.mission ? data.mission : cloneJson(mission);
@@ -1274,6 +1276,47 @@ function runUniversalParse(mode){
     });
   }
 
+  // STEP 2.75: Debrief handoff blocks
+  if(mode==='load' && /FIELDOPS\s+[—-]\s*DEBRIEF LOG HANDOFF/i.test(raw)){
+    var dateMatch=raw.match(/^Date:\s*(.+)$/im);
+    var dateLabel=dateMatch?dateMatch[1].trim():'';
+    var instructionMatch=raw.match(/Gabby\s+[—-]\s+please\s+(.+)$/im);
+    var instructionText=instructionMatch?instructionMatch[1].trim():'log these to Notion and prep tomorrow\'s morning load-in block.';
+    var missionTitle='Debrief Log Handoff';
+    if(dateLabel)missionTitle+=' — '+dateLabel;
+    var handoffObjective='Log the attached debrief summary into Notion and prepare the next morning load-in block.';
+    if(instructionText){
+      handoffObjective=instructionText.charAt(0).toUpperCase()+instructionText.slice(1);
+      if(!/[.!?]$/.test(handoffObjective))handoffObjective+='.';
+    }
+    var handoffInputs=raw
+      .replace(/^FIELDOPS\s+[—-]\s*DEBRIEF LOG HANDOFF\s*$/im,'')
+      .replace(/^\s*Gabby\s+[—-]\s+please\s+.+$/im,'')
+      .trim();
+    missions.push({
+      id:'M-'+Date.now()+'-'+loadedMissions,
+      title:missionTitle,
+      agent:'gabby',
+      missionClass:'documentation',
+      actionType:'',
+      sourceContext:'debrief_handoff',
+      parentMissionId:'',
+      template:'',
+      objective:handoffObjective,
+      inputs:handoffInputs,
+      expectedOutput:'Return: - Notion logging completed - morning load-in block prepared - carry-forward items identified',
+      priority:'high',
+      lane:'l1',
+      due:'',
+      status:'queued',
+      carry:false,
+      prompt:'',
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    });
+    loadedMissions++;
+  }
+
   // STEP 3: Mission blocks
   var rawUpper=raw.toUpperCase();
   var hasMissionMarker=/FIELDOPS MISSION DISPATCH|MISSION DISPATCH/.test(rawUpper);
@@ -1298,7 +1341,7 @@ function runUniversalParse(mode){
         if(/^Mission:/i.test(t)){title=t.replace(/^Mission:\s*/i,'').trim();blockHasMission=true;captureMode='';}
         else if(/^Agent:/i.test(t)){var raw2=t.replace(/^Agent:\s*/i,'').toLowerCase().split(/[\s\/,\\|]+/)[0].trim().replace(/\/\/.*$/,'').trim();if(['gabby','chuck','maria','copilot','guy'].indexOf(raw2)>=0)agent=raw2;blockHasAgent=true;captureMode='';}
         else if(/^Mission Class:/i.test(t)){missionClass=t.replace(/^Mission Class:\s*/i,'').trim().toLowerCase();captureMode='';}
-        else if(/^Action Type:/i.test(t)){actionType=t.replace(/^Action Type:\s*/i,'').trim();captureMode='';}
+        else if(/^Action\s*Type\s*:/i.test(t)){actionType=t.replace(/^Action\s*Type\s*:\s*/i,'').trim();captureMode='';}
         else if(/^Source Context:/i.test(t)){sourceContext=t.replace(/^Source Context:\s*/i,'').trim();captureMode='';}
         else if(/^Parent Mission ID:/i.test(t)){parentMissionId=t.replace(/^Parent Mission ID:\s*/i,'').trim();captureMode='';}
         else if(/^Priority:/i.test(t)){priority=t.replace(/^Priority:\s*/i,'').toLowerCase().trim();captureMode='';}
@@ -1340,10 +1383,20 @@ function runUniversalParse(mode){
   } else if((hasMissionMarker||(hasAgentLine&&(hasObjective||hasMissionLine)))&&mode==='composer'){
     var agentM=raw.match(/^Agent:\s*(.+)/im);
     var titleM=raw.match(/^Mission:\s*(.+)/im);
+    var missionClassM=raw.match(/^Mission Class:\s*(.+)/im);
+    var actionTypeM=raw.match(/^Action\s*Type\s*:\s*(.+)/im);
+    var sourceContextM=raw.match(/^Source Context:\s*(.+)/im);
+    var parentMissionIdM=raw.match(/^Parent Mission ID:\s*(.*)$/im);
     var objM=raw.match(/^OBJECTIVE:\s*\n?([\s\S]+?)(?=\n(?:INPUT|STEP|OUTPUT|EXPECTED|RESULT|---|\-\-\-\-|$))/im)||raw.match(/^Objective:\s*(.+)/im);
     var outM=raw.match(/^(?:EXPECTED OUTPUT|OUTPUT):\s*\n?([\s\S]+?)(?=\n(?:---|\-\-\-\-|Source|$))/im);
     var laneM=raw.match(/\b(L[1-4])\s*[\-—]\s*(NEEA|NWE|IECC|NCAT)\b/i)||raw.match(/^Lane:\s*(l[1-4])/im);
     var prioM=raw.match(/^Priority:\s*(critical|high|normal|low)/im);
+    composerMissionMeta={
+      missionClass:missionClassM?missionClassM[1].trim().toLowerCase():'',
+      actionType:actionTypeM?actionTypeM[1].trim():'',
+      sourceContext:sourceContextM?sourceContextM[1].trim():'',
+      parentMissionId:parentMissionIdM?parentMissionIdM[1].trim():''
+    };
     if(agentM){var ag=agentM[1].toLowerCase().split(/[\s\/,]/)[0].trim();if(['gabby','chuck','gary','claude'].indexOf(ag)>=0){document.getElementById('cAgent').value=ag;onAgentChange();}}
     if(titleM)document.getElementById('cTitle').value=titleM[1].trim();
     if(objM)document.getElementById('cObjective').value=objM[1].trim();
@@ -1480,6 +1533,12 @@ function copyMissionPrompt(id){
 function editMission(id){
   var m=missions.find(function(x){return x.id===id;});if(!m)return;
   document.getElementById('editingId').value=id;editingId=id;
+  composerMissionMeta={
+    missionClass:m.missionClass||'',
+    actionType:m.actionType||'',
+    sourceContext:m.sourceContext||'',
+    parentMissionId:m.parentMissionId||''
+  };
   document.getElementById('cTitle').value=m.title||'';
   document.getElementById('cAgent').value=m.agent||'';onAgentChange();
   setTimeout(function(){
@@ -1818,6 +1877,10 @@ function saveMission(status){
       m.inputs=document.getElementById('cInputs').value.trim();
       m.expectedOutput=document.getElementById('cOutput').value.trim();
       m.priority=priority;m.lane=lane;m.due=due;m.carry=carry;
+      m.missionClass=composerMissionMeta.missionClass||m.missionClass||'';
+      m.actionType=composerMissionMeta.actionType||m.actionType||'';
+      m.sourceContext=composerMissionMeta.sourceContext||m.sourceContext||'';
+      m.parentMissionId=composerMissionMeta.parentMissionId||m.parentMissionId||'';
       if(status!=='queued')m.status=status;
       m.prompt=currentPrompt;m.updatedAt=new Date().toISOString();
       if(criticalId===eId)renderFocus();
@@ -1826,12 +1889,13 @@ function saveMission(status){
       return;
     }
   }
-  var mission={id:'M-'+Date.now(),title:title,agent:agent,template:tplName,objective:obj,inputs:document.getElementById('cInputs').value.trim(),expectedOutput:document.getElementById('cOutput').value.trim(),priority:priority,lane:lane,due:due,status:status,carry:carry,prompt:currentPrompt,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+  var mission={id:'M-'+Date.now(),title:title,agent:agent,missionClass:composerMissionMeta.missionClass||'',actionType:composerMissionMeta.actionType||'',sourceContext:composerMissionMeta.sourceContext||'',parentMissionId:composerMissionMeta.parentMissionId||'',template:tplName,objective:obj,inputs:document.getElementById('cInputs').value.trim(),expectedOutput:document.getElementById('cOutput').value.trim(),priority:priority,lane:lane,due:due,status:status,carry:carry,prompt:currentPrompt,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   missions.push(mission);updateCounts();renderQueue();scheduleStateSave();clearComposer();showSection('queue');
   if(requestedStatus==='dispatched'){dispatchMission(mission.id);}else{showToast('Mission saved — '+status.toUpperCase());}
 }
 function clearComposer(){
   editingId=null;document.getElementById('editingId').value='';
+  composerMissionMeta={missionClass:'',actionType:'',sourceContext:'',parentMissionId:''};
   var ct=document.getElementById('composerTitle');if(ct)ct.textContent='Mission Composer';
   ['cTitle','cObjective','cInputs','cOutput'].forEach(function(id){var el=document.getElementById(id);if(el)el.value='';});
   var ag=document.getElementById('cAgent');if(ag)ag.value='';

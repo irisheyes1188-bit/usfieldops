@@ -12,6 +12,7 @@ from gmail_oauth import (
     GmailDependencyError,
     create_gmail_draft,
 )
+from lead_investigation import LeadInvestigationError, investigate_public_lead
 from models import Mission
 
 
@@ -20,6 +21,7 @@ def classify_mission(mission: Mission) -> dict:
         supported_actions = {
             "gmail_create_draft",
             "calendar_create_event",
+            "lead_investigation",
             "generate_word_report",
             "email_deliverable",
             "log_deliverable",
@@ -68,6 +70,30 @@ def classify_mission(mission: Mission) -> dict:
         and calendar_field_hits >= 2
     ):
         return {"execution_type": "action", "action_type": "calendar_create_event"}
+    if (
+        any(
+            phrase in text
+            for phrase in (
+                "lead investigation",
+                "decision-maker mapping",
+                "decision maker mapping",
+                "investigate the target",
+                "investigate this business",
+                "investigate this company",
+            )
+        )
+        or (
+            "investigate" in text
+            and "lead" in text
+            and (mission.lane or "").strip().upper() == "L2"
+        )
+        or (
+            (mission.missionClass or "").strip().lower() == "investigation"
+            and (mission.lane or "").strip().upper() == "L2"
+            and "investigate" in text
+        )
+    ):
+        return {"execution_type": "action", "action_type": "lead_investigation"}
     if (
         ("comparison table" in text or "comparison report" in text or "word-format comparison report" in text)
         and re.search(r"\b(create|generate|build|compare)\b", text)
@@ -268,6 +294,193 @@ def _extract_calendar_fields(mission: Mission) -> dict:
     }
 
 
+def _extract_lead_investigation_fields(mission: Mission) -> dict:
+    text = "\n".join(
+        [
+            mission.title or "",
+            mission.objective or "",
+            mission.inputs or "",
+            mission.expectedOutput or "",
+            mission.prompt or "",
+        ]
+    )
+    inputs_text = mission.inputs or text
+    target_name = _extract_field(inputs_text, "Target Name") or mission.title or ""
+    address = _extract_field(inputs_text, "Address")
+    city_state = _extract_field(inputs_text, "City / State")
+    website = _extract_field(inputs_text, "Website")
+    known_person = _extract_field(inputs_text, "Known Person")
+    known_phone = _extract_field(inputs_text, "Known Phone")
+    known_email = _extract_field(inputs_text, "Known Email")
+    lead_context = _extract_field(inputs_text, "Lead Context")
+    desired_contact_type = _extract_field(inputs_text, "Desired Contact Type")
+    reason = lead_context or mission.objective or ""
+
+    return {
+        "target_name": target_name.strip(),
+        "address": address.strip(),
+        "city_state": city_state.strip(),
+        "website": website.strip(),
+        "known_person": known_person.strip(),
+        "known_phone": known_phone.strip(),
+        "known_email": known_email.strip(),
+        "lead_context": lead_context.strip(),
+        "desired_contact_type": desired_contact_type.strip(),
+        "reason": reason.strip(),
+    }
+
+
+def _build_lead_investigation_result(mission: Mission) -> dict:
+    fields = _extract_lead_investigation_fields(mission)
+    if not fields["target_name"]:
+        return {
+            "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Lead investigation missing target name",
+            "full_output": (
+                "Action Type: lead_investigation\n\n"
+                "FieldOps could not start L2 lead investigation because no Target Name "
+                "was provided in the mission inputs."
+            ),
+            "follow_up_needed": True,
+            "carry_forward": bool(mission.carry),
+            "action_required": True,
+            "action_type": "lead_investigation",
+            "action_status": "missing_target_name",
+            "action_completed": False,
+        }
+
+    contact_focus = fields["desired_contact_type"] or "operations lead or facilities decision-maker"
+    try:
+        investigation = investigate_public_lead(
+            target_name=fields["target_name"],
+            website=fields["website"],
+            address=fields["address"],
+            city_state=fields["city_state"],
+            known_person=fields["known_person"],
+            known_phone=fields["known_phone"],
+            known_email=fields["known_email"],
+            desired_contact_type=contact_focus,
+            lead_context=fields["lead_context"],
+        )
+        verified_entity = investigation["verified_entity"]
+        lead_relevance = investigation["lead_relevance"]
+        best_contact = investigation.get("best_contact")
+        decision_makers = investigation["decision_maker_map"]
+        department_routes = investigation.get("department_routes", [])
+        contact_ladder = investigation["contact_ladder"]
+        source_trail = investigation["source_trail"]
+
+        best_contact_lines = (
+            "\n".join(
+                [
+                    f"- Name: {best_contact['full_name']}",
+                    f"- Role: {best_contact['role']}",
+                    f"- Confidence: {best_contact['confidence']}",
+                    f"- Source: {best_contact.get('source_url', '[not recorded]')}",
+                ]
+            )
+            if best_contact
+            else "- No single best named contact could be confirmed from the public sources reviewed."
+        )
+        decision_lines = (
+            "\n".join(
+                f"- {item['full_name']} — {item['role']} ({item['confidence']})"
+                for item in decision_makers[:5]
+            )
+            or "- No named decision-makers were extracted from the public pages reviewed."
+        )
+        department_lines = (
+            "\n".join(
+                f"- {item['department']} ({item['confidence']})"
+                for item in department_routes[:5]
+            )
+            or "- No backup departments were inferred from the public sources reviewed."
+        )
+        ladder_lines = (
+            "\n".join(
+                f"- {item['label']}: {item['value']} ({item['confidence']})"
+                for item in contact_ladder[:6]
+            )
+            or "- No public contact ladder items were found."
+        )
+        source_lines = (
+            "\n".join(
+                f"- {item['source']} [{item.get('source_type', 'public_source')}]"
+                for item in source_trail[:6]
+            )
+            or "- No public sources recorded."
+        )
+        return {
+            "status": "partial",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Lead investigation completed from public sources",
+            "full_output": (
+                "Action Type: lead_investigation\n\n"
+                "FieldOps completed a broader public-source investigation using the provided website plus related public references.\n\n"
+                "Verified Entity:\n"
+                f"- Name: {verified_entity['name']}\n"
+                f"- Website: {verified_entity['website']}\n"
+                f"- Address: {verified_entity['address'] or '[not confirmed]'}\n"
+                f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n\n"
+                "Lead Relevance:\n"
+                f"- Reason: {lead_relevance['reason']}\n"
+                f"- Summary: {lead_relevance['summary']}\n"
+                f"- Recommendation: {investigation['recommendation']}\n\n"
+                "Best Contact Recommendation:\n"
+                f"{best_contact_lines}\n\n"
+                "Decision-Maker Map:\n"
+                f"{decision_lines}\n\n"
+                "Department Routing Backup:\n"
+                f"{department_lines}\n\n"
+                "Contact Ladder:\n"
+                f"{ladder_lines}\n\n"
+                "Public Source Trail:\n"
+                f"{source_lines}\n\n"
+                "Next Step:\n"
+                "- Review the candidate contacts and, if they look usable, feed approved records into L1 Rolodex Builder.\n"
+            ),
+            "follow_up_needed": True,
+            "carry_forward": bool(mission.carry),
+            "action_required": False,
+            "action_type": "lead_investigation",
+            "action_status": "investigated",
+            "action_completed": True,
+            "action_details": investigation,
+        }
+    except LeadInvestigationError as exc:
+        return {
+            "status": "action_required",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Lead investigation needs more public-source input",
+            "full_output": str(exc),
+            "follow_up_needed": True,
+            "carry_forward": bool(mission.carry),
+            "action_required": True,
+            "action_type": "lead_investigation",
+            "action_status": "needs_input",
+            "action_completed": False,
+            "action_details": {
+                "target_name": fields["target_name"],
+                "website": fields["website"],
+                "desired_contact_type": contact_focus,
+            },
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Lead investigation failed",
+            "full_output": str(exc),
+            "follow_up_needed": True,
+            "carry_forward": bool(mission.carry),
+            "action_required": True,
+            "action_type": "lead_investigation",
+            "action_status": "failed",
+            "action_completed": False,
+        }
+
+
 def build_mock_result(mission: Mission) -> dict:
     lane = mission.lane.upper() if mission.lane else "GENERAL"
     title = mission.title or "Untitled Mission"
@@ -440,6 +653,8 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
                 "action_status": "failed",
                 "action_completed": False,
             }
+    if action_type == "lead_investigation":
+        return _build_lead_investigation_result(mission)
     if action_type in {
         "generate_word_report",
         "email_deliverable",

@@ -1,0 +1,855 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from html import unescape
+from html.parser import HTMLParser
+import re
+from typing import Iterable
+from urllib import error, parse, request
+
+
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (compatible; FieldOpsLeadInvestigator/1.0; +https://usfieldops.com)"
+)
+DEFAULT_TIMEOUT_SECONDS = 12
+MAX_WEBSITE_PAGES = 8
+MAX_SEARCH_RESULTS = 6
+CONTACT_PATH_HINTS = (
+    "contact",
+    "about",
+    "team",
+    "staff",
+    "leadership",
+    "company",
+    "directory",
+    "board",
+    "trustees",
+    "governance",
+    "who-we-are",
+    "who-we-serve",
+    "our-team",
+    "our-staff",
+)
+ROLE_KEYWORDS = (
+    "owner",
+    "principal",
+    "president",
+    "chief executive",
+    "executive director",
+    "administrator",
+    "board",
+    "trustee",
+    "manager",
+    "operations",
+    "facility",
+    "facilities",
+    "director",
+    "maintenance",
+    "engineering",
+    "capital",
+    "project",
+    "compliance",
+    "rebate",
+    "program",
+    "office",
+)
+TITLE_HINTS = (
+    "owner",
+    "president",
+    "chief executive officer",
+    "ceo",
+    "executive director",
+    "chief operating officer",
+    "chief financial officer",
+    "administrator",
+    "board chair",
+    "board president",
+    "trustee",
+    "vice president",
+    "director",
+    "manager",
+    "operations lead",
+    "operations manager",
+    "facilities manager",
+    "facility manager",
+    "office manager",
+    "program manager",
+    "compliance manager",
+    "regional manager",
+    "general manager",
+)
+DEPARTMENT_HINTS = (
+    ("facilities", "Facilities"),
+    ("facility", "Facilities"),
+    ("maintenance", "Maintenance"),
+    ("operations", "Operations"),
+    ("engineering", "Engineering"),
+    ("capital projects", "Capital Projects"),
+    ("construction", "Construction"),
+    ("administration", "Administration"),
+    ("finance", "Finance"),
+    ("office", "Administrative Office"),
+)
+NONPROFIT_TOKENS = ("ymca", "y m c a", "foundation", "nonprofit", "non-profit", "charity")
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
+PHONE_RE = re.compile(
+    r"(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}"
+)
+NAME_ROLE_RE = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s*(?:,|-|\u2013|\u2014)\s*([A-Za-z/& ]{3,80})"
+)
+ROLE_NAME_RE = re.compile(
+    r"\b("
+    r"(?:Chief Executive Officer|Chief Operating Officer|Chief Financial Officer|Executive Director|President(?:\s*&\s*CEO)?|"
+    r"Board Chair|Board President|Trustee|Director|Manager|Administrator|Facilities Manager|Operations Manager|Maintenance Manager)"
+    r")\s*(?:,|-|\u2013|\u2014|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})",
+    re.I,
+)
+SITE_NAME_RE = re.compile(
+    r'(?is)<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']'
+)
+TITLE_RE = re.compile(r"(?is)<title>(.*?)</title>")
+QUERY_VARIANTS = (
+    "leadership",
+    "staff",
+    "board of directors",
+    "executive director",
+    "facilities manager",
+    "operations manager",
+    "contact",
+)
+NOISY_NAME_PREFIXES = {"us", "our", "meet", "team", "staff", "board", "leadership", "contact"}
+
+
+class LeadInvestigationError(RuntimeError):
+    pass
+
+
+@dataclass
+class FetchedPage:
+    url: str
+    title: str
+    site_name: str
+    text: str
+    links: list[str]
+    source_type: str = "company_website"
+
+
+@dataclass
+class SearchResult:
+    url: str
+    title: str
+    snippet: str
+    source_type: str
+
+
+class _SimpleHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[str] = []
+        self.text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        for key, value in attrs:
+            if key.lower() == "href" and value:
+                self.links.append(value.strip())
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self.text_parts.append(text)
+
+
+class _DuckDuckGoHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[SearchResult] = []
+        self._capture_title = False
+        self._capture_snippet = False
+        self._current_url = ""
+        self._current_title_parts: list[str] = []
+        self._current_snippet_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key.lower(): value for key, value in attrs}
+        class_value = (attrs_dict.get("class") or "").lower()
+        if tag.lower() == "a" and "result__a" in class_value:
+            href = attrs_dict.get("href") or ""
+            self._current_url = _normalize_search_result_url(href)
+            self._current_title_parts = []
+            self._current_snippet_parts = []
+            self._capture_title = True
+            self._capture_snippet = False
+        elif tag.lower() in {"a", "div", "span"} and "result__snippet" in class_value:
+            self._current_snippet_parts = []
+            self._capture_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_name = tag.lower()
+        if tag_name == "a" and self._capture_title:
+            self._capture_title = False
+        elif self._capture_snippet and tag_name in {"a", "div", "span"}:
+            self._capture_snippet = False
+            if self._current_url and self._current_title_parts:
+                title = re.sub(r"\s+", " ", " ".join(self._current_title_parts)).strip()
+                snippet = re.sub(r"\s+", " ", " ".join(self._current_snippet_parts)).strip()
+                if title and self._current_url:
+                    source_type = _classify_public_source(self._current_url)
+                    self.results.append(
+                        SearchResult(
+                            url=self._current_url,
+                            title=title,
+                            snippet=snippet,
+                            source_type=source_type,
+                        )
+                    )
+                self._current_url = ""
+                self._current_title_parts = []
+                self._current_snippet_parts = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if not text:
+            return
+        if self._capture_title:
+            self._current_title_parts.append(text)
+        elif self._capture_snippet:
+            self._current_snippet_parts.append(text)
+
+
+def _normalize_url(value: str) -> str:
+    if not value:
+        return ""
+    candidate = value.strip()
+    if not candidate:
+        return ""
+    if not re.match(r"^[a-z]+://", candidate, re.I):
+        candidate = f"https://{candidate}"
+    parsed = parse.urlparse(candidate)
+    if not parsed.netloc:
+        raise LeadInvestigationError("Provided website is not a valid public URL.")
+    return parse.urlunparse(
+        (
+            parsed.scheme or "https",
+            parsed.netloc,
+            parsed.path or "/",
+            "",
+            "",
+            "",
+        )
+    )
+
+
+def _normalize_search_result_url(value: str) -> str:
+    if not value:
+        return ""
+    candidate = html_unescape_url(value.strip())
+    if candidate.startswith("//"):
+        candidate = "https:" + candidate
+    parsed = parse.urlparse(candidate)
+    if "duckduckgo.com" in parsed.netloc.lower():
+        query = parse.parse_qs(parsed.query)
+        if "uddg" in query and query["uddg"]:
+            candidate = query["uddg"][0]
+            parsed = parse.urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+
+
+def html_unescape_url(value: str) -> str:
+    return unescape(value).replace("&amp;", "&")
+
+
+def _fetch_url(url: str) -> str:
+    req = request.Request(
+        url,
+        headers={
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type.lower():
+                raise LeadInvestigationError(f"Public page is not HTML: {url}")
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset, errors="replace")
+    except error.HTTPError as exc:
+        raise LeadInvestigationError(f"Public page returned HTTP {exc.code}: {url}") from exc
+    except error.URLError as exc:
+        raise LeadInvestigationError(f"Unable to reach public page: {url}") from exc
+
+
+def _fetch_optional_url(url: str) -> str:
+    try:
+        return _fetch_url(url)
+    except LeadInvestigationError:
+        return ""
+
+
+def _clean_text(raw_text: str) -> str:
+    text = unescape(raw_text)
+    text = re.sub(r"(?is)<script.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?</style>", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _extract_title(html: str) -> str:
+    match = TITLE_RE.search(html)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", unescape(match.group(1))).strip()
+
+
+def _extract_site_name(html: str) -> str:
+    match = SITE_NAME_RE.search(html)
+    if match:
+        return re.sub(r"\s+", " ", unescape(match.group(1))).strip()
+    return ""
+
+
+def _parse_page(url: str, html: str) -> FetchedPage:
+    parser = _SimpleHTMLParser()
+    parser.feed(html)
+    text = _clean_text(" ".join(parser.text_parts))
+    links = [parse.urljoin(url, href) for href in parser.links]
+    return FetchedPage(
+        url=url,
+        title=_extract_title(html),
+        site_name=_extract_site_name(html),
+        text=text,
+        links=links,
+        source_type=_classify_public_source(url),
+    )
+
+
+def _build_search_queries(target_name: str, city_state: str, website: str, lead_context: str) -> list[str]:
+    base = " ".join(part for part in [target_name, city_state] if part).strip()
+    if not base:
+        return []
+    queries: list[str] = []
+    for variant in QUERY_VARIANTS:
+        queries.append(f"{base} {variant}")
+    if website:
+        host = parse.urlparse(website).netloc.lower().replace("www.", "")
+        if host:
+            for variant in ("leadership", "staff", "board", "contact"):
+                queries.append(f"site:{host} {target_name} {variant}")
+    if lead_context and "rebate" in lead_context.lower():
+        queries.append(f"{base} facilities manager rebate")
+    if any(token in base.lower() for token in NONPROFIT_TOKENS):
+        queries.extend(
+            [
+                f"{base} board of directors",
+                f"{base} executive director",
+                f"{base} form 990",
+            ]
+        )
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        normalized = query.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped[:6]
+
+
+def _classify_public_source(url: str) -> str:
+    host = parse.urlparse(url).netloc.lower()
+    if any(token in host for token in ("irs.gov", "guidestar", "propublica")):
+        return "nonprofit_record"
+    if any(token in host for token in ("sec.gov", "sam.gov")):
+        return "official_registry"
+    if any(token in host for token in ("opencorporates", "sos", "bizapedia")):
+        return "business_registry"
+    if any(token in host for token in ("linkedin.com", "zoominfo.com", "rocketreach.co")):
+        return "public_profile"
+    if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com")):
+        return "public_social"
+    return "company_website"
+
+
+def _fetch_public_search_results(
+    target_name: str,
+    city_state: str,
+    website: str,
+    lead_context: str,
+) -> list[SearchResult]:
+    results: list[SearchResult] = []
+    seen_urls: set[str] = set()
+    for query in _build_search_queries(target_name, city_state, website, lead_context):
+        search_url = "https://html.duckduckgo.com/html/?q=" + parse.quote_plus(query)
+        html = _fetch_optional_url(search_url)
+        if not html:
+            continue
+        parser = _DuckDuckGoHTMLParser()
+        parser.feed(html)
+        for result in parser.results:
+            if not result.url or result.url in seen_urls:
+                continue
+            seen_urls.add(result.url)
+            results.append(result)
+            if len(results) >= MAX_SEARCH_RESULTS:
+                return results
+    return results
+
+
+def _pick_relevant_links(base_url: str, links: Iterable[str]) -> list[str]:
+    base_host = parse.urlparse(base_url).netloc.lower()
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for link in links:
+        parsed = parse.urlparse(link)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if parsed.netloc.lower() != base_host:
+            continue
+        normalized = parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        if any(hint in lowered for hint in CONTACT_PATH_HINTS):
+            seen.add(lowered)
+            chosen.append(normalized)
+        if len(chosen) >= MAX_WEBSITE_PAGES - 1:
+            break
+    return chosen
+
+
+def _extract_emails(text: str) -> list[str]:
+    values = []
+    for match in EMAIL_RE.findall(text):
+        email_value = match.strip().lower().rstrip(".,;:")
+        if email_value not in values:
+            values.append(email_value)
+    return values
+
+
+def _extract_phones(text: str) -> list[str]:
+    values = []
+    for match in PHONE_RE.findall(text):
+        phone_value = re.sub(r"\s+", " ", match).strip().rstrip(".,;:")
+        if phone_value not in values:
+            values.append(phone_value)
+    return values
+
+
+def _sentence_chunks(text: str) -> list[str]:
+    rough = re.split(r"(?<=[.!?])\s+|\s{2,}", text)
+    return [chunk.strip() for chunk in rough if chunk.strip()]
+
+
+def _normalize_candidate_name(name: str) -> str:
+    parts = [part for part in re.split(r"\s+", name.strip()) if part]
+    while parts and parts[0].lower().strip(".,:;") in NOISY_NAME_PREFIXES:
+        parts.pop(0)
+    if len(parts) < 2:
+        return ""
+    cleaned = " ".join(parts[:3]).strip(" -\u2013\u2014")
+    if not re.match(r"^[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,2}$", cleaned):
+        return ""
+    return cleaned
+
+
+def _normalize_role_text(role: str) -> str:
+    role_clean = re.sub(r"\s+", " ", role).strip(" -\u2013\u2014")
+    role_clean = re.sub(
+        r"\s+[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)?$",
+        "",
+        role_clean,
+    )
+    return role_clean.strip(" -\u2013\u2014")
+
+
+def _extract_role_candidates_from_text(
+    text: str,
+    desired_contact_type: str,
+    *,
+    source_url: str,
+    source_type: str,
+) -> list[dict]:
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    desired_tokens = {
+        token.lower()
+        for token in re.split(r"[^a-zA-Z]+", desired_contact_type or "")
+        if token.strip()
+    }
+    for chunk in _sentence_chunks(text):
+        lowered = chunk.lower()
+        if not any(keyword in lowered for keyword in ROLE_KEYWORDS):
+            continue
+        for name, role in NAME_ROLE_RE.findall(chunk):
+            name_clean = _normalize_candidate_name(name)
+            role_clean = _normalize_role_text(role)
+            if not name_clean or not role_clean:
+                continue
+            if not any(hint in role_clean.lower() for hint in TITLE_HINTS):
+                continue
+            key = (name_clean, role_clean.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            confidence = "Medium"
+            reason = "Named on a public page with a role/title."
+            if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
+                confidence = "High"
+                reason = "Named on a public page with a role matching the requested contact type."
+            candidates.append(
+                {
+                    "full_name": name_clean,
+                    "role": role_clean,
+                    "confidence": confidence,
+                    "finding_type": "confirmed_named_contact",
+                    "why_relevant": reason,
+                    "source_url": source_url,
+                    "source_type": source_type,
+                    "source_excerpt": chunk[:240],
+                }
+            )
+        for role, name in ROLE_NAME_RE.findall(chunk):
+            role_clean = _normalize_role_text(role)
+            name_clean = _normalize_candidate_name(name)
+            if not name_clean or not role_clean:
+                continue
+            key = (name_clean, role_clean.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            confidence = "Medium"
+            reason = "Named on a public page with a public leadership title."
+            if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
+                confidence = "High"
+                reason = "Named on a public page with a title aligned to the requested contact type."
+            candidates.append(
+                {
+                    "full_name": name_clean,
+                    "role": role_clean,
+                    "confidence": confidence,
+                    "finding_type": "confirmed_named_contact",
+                    "why_relevant": reason,
+                    "source_url": source_url,
+                    "source_type": source_type,
+                    "source_excerpt": chunk[:240],
+                }
+            )
+    return candidates[:8]
+
+
+def _extract_department_routes(
+    text: str,
+    desired_contact_type: str,
+    *,
+    source_url: str,
+    source_type: str,
+) -> list[dict]:
+    candidates: list[dict] = []
+    lowered = text.lower()
+    desired_tokens = {
+        token.lower()
+        for token in re.split(r"[^a-zA-Z]+", desired_contact_type or "")
+        if token.strip()
+    }
+    for keyword, label in DEPARTMENT_HINTS:
+        if keyword not in lowered:
+            continue
+        confidence = "Medium"
+        reason = f"Public page text references {label.lower()}."
+        if desired_tokens and any(token in keyword for token in desired_tokens):
+            confidence = "High"
+            reason = f"Public page text references {label.lower()}, which aligns to the requested contact type."
+        candidates.append(
+            {
+                "department": label,
+                "confidence": confidence,
+                "finding_type": "inferred_department_route",
+                "why_relevant": reason,
+                "source_url": source_url,
+                "source_type": source_type,
+            }
+        )
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item["department"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:5]
+
+
+def _dedupe_role_candidates(candidates: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in candidates:
+        key = (
+            (item.get("full_name") or "").strip().lower(),
+            (item.get("role") or "").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:8]
+
+
+def _dedupe_department_routes(routes: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in routes:
+        key = (item.get("department") or "").strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:5]
+
+
+def _supports_for_page(page: FetchedPage) -> str:
+    lowered = page.url.lower()
+    if page.source_type == "nonprofit_record":
+        return "Public nonprofit leadership or board record"
+    if page.source_type == "business_registry":
+        return "Public business registration signal"
+    if page.source_type == "official_registry":
+        return "Official public registry signal"
+    if "board" in lowered or "trustee" in lowered or "governance" in lowered:
+        return "Board or governance information"
+    if "leadership" in lowered or "staff" in lowered or "team" in lowered or "directory" in lowered:
+        return "Staff or leadership information"
+    if "contact" in lowered or "about" in lowered:
+        return "Public contact or organization information"
+    return "Public company/contact information"
+
+
+def _rank_contact_candidate(candidate: dict, desired_contact_type: str) -> int:
+    score = 0
+    confidence = (candidate.get("confidence") or "").lower()
+    role = (candidate.get("role") or "").lower()
+    source_type = (candidate.get("source_type") or "").lower()
+    if confidence == "high":
+        score += 5
+    elif confidence == "medium":
+        score += 3
+    else:
+        score += 1
+    if source_type in {"company_website", "official_registry", "nonprofit_record"}:
+        score += 2
+    desired_tokens = {
+        token.lower()
+        for token in re.split(r"[^a-zA-Z]+", desired_contact_type or "")
+        if token.strip()
+    }
+    if desired_tokens and any(token in role for token in desired_tokens):
+        score += 4
+    if any(token in role for token in ("facilities", "operations", "maintenance", "engineering", "director", "manager")):
+        score += 2
+    if any(token in role for token in ("board chair", "board president", "executive director", "ceo")):
+        score += 1
+    return score
+
+
+def _choose_best_contact(candidates: list[dict], desired_contact_type: str) -> dict | None:
+    if not candidates:
+        return None
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            _rank_contact_candidate(item, desired_contact_type),
+            item.get("full_name", ""),
+        ),
+        reverse=True,
+    )
+    return ranked[0]
+
+
+def _search_result_to_page(result: SearchResult) -> FetchedPage:
+    text = " ".join(part for part in [result.title, result.snippet] if part).strip()
+    return FetchedPage(
+        url=result.url,
+        title=result.title,
+        site_name="",
+        text=text,
+        links=[],
+        source_type=result.source_type,
+    )
+
+
+def investigate_public_lead(
+    *,
+    target_name: str,
+    website: str = "",
+    address: str = "",
+    city_state: str = "",
+    known_person: str = "",
+    known_phone: str = "",
+    known_email: str = "",
+    desired_contact_type: str = "",
+    lead_context: str = "",
+) -> dict:
+    if not website:
+        raise LeadInvestigationError(
+            "Live public-source investigation currently requires a Website field. "
+            "Provide the company/public website and rerun the mission."
+        )
+
+    base_url = _normalize_url(website)
+    home_html = _fetch_url(base_url)
+    pages: list[FetchedPage] = [_parse_page(base_url, home_html)]
+    for link in _pick_relevant_links(base_url, pages[0].links):
+        try:
+            html = _fetch_url(link)
+        except LeadInvestigationError:
+            continue
+        pages.append(_parse_page(link, html))
+
+    search_results = _fetch_public_search_results(
+        target_name=target_name,
+        city_state=city_state,
+        website=base_url,
+        lead_context=lead_context,
+    )
+    for result in search_results:
+        pages.append(_search_result_to_page(result))
+        if len(pages) >= (MAX_WEBSITE_PAGES + MAX_SEARCH_RESULTS):
+            break
+
+    combined_text = "\n".join(page.text for page in pages if page.text)
+    if not combined_text:
+        raise LeadInvestigationError(
+            "FieldOps reached the public website but could not extract usable public text."
+        )
+
+    emails = _extract_emails(combined_text)
+    phones = _extract_phones(combined_text)
+    all_candidates: list[dict] = []
+    all_department_routes: list[dict] = []
+    for page in pages:
+        if not page.text:
+            continue
+        all_candidates.extend(
+            _extract_role_candidates_from_text(
+                page.text,
+                desired_contact_type,
+                source_url=page.url,
+                source_type=page.source_type,
+            )
+        )
+        all_department_routes.extend(
+            _extract_department_routes(
+                page.text,
+                desired_contact_type,
+                source_url=page.url,
+                source_type=page.source_type,
+            )
+        )
+    candidates = _dedupe_role_candidates(all_candidates)
+    department_routes = _dedupe_department_routes(all_department_routes)
+
+    entity_name = (
+        pages[0].site_name
+        or pages[0].title.split("|")[0].split("-")[0].strip()
+        or target_name
+    )
+    nonprofit_signals = any(token in f"{target_name} {entity_name} {lead_context}".lower() for token in NONPROFIT_TOKENS) or any(
+        page.source_type == "nonprofit_record" for page in pages
+    )
+    source_trail = [
+        {
+            "source": page.url,
+            "source_type": page.source_type,
+            "source_date": "",
+            "supports": _supports_for_page(page),
+        }
+        for page in pages
+    ]
+
+    contact_ladder = []
+    if known_person:
+        contact_ladder.append(
+            {
+                "label": "Known person clue",
+                "value": known_person,
+                "confidence": "Medium",
+            }
+        )
+    if known_email:
+        contact_ladder.append(
+            {"label": "Known email clue", "value": known_email, "confidence": "High"}
+        )
+    if known_phone:
+        contact_ladder.append(
+            {"label": "Known phone clue", "value": known_phone, "confidence": "High"}
+        )
+    for email_value in emails[:4]:
+        contact_ladder.append(
+            {"label": "Public email", "value": email_value, "confidence": "High"}
+        )
+    for phone_value in phones[:3]:
+        contact_ladder.append(
+            {"label": "Public phone", "value": phone_value, "confidence": "High"}
+        )
+    for route in department_routes[:3]:
+        contact_ladder.append(
+            {
+                "label": "Likely department route",
+                "value": route["department"],
+                "confidence": route["confidence"],
+            }
+        )
+    contact_ladder.append(
+        {
+            "label": "Website contact path",
+            "value": base_url,
+            "confidence": "High",
+        }
+    )
+
+    recommendation = "Pursue with caution"
+    if candidates and (emails or phones or department_routes):
+        recommendation = "Pursue"
+    elif not candidates and not emails and not phones and not department_routes:
+        recommendation = "Insufficient evidence"
+
+    evidence_summary = (
+        f"Reviewed {len(pages)} public page(s) for {entity_name or target_name}. "
+        f"Found {len(candidates)} decision-maker candidate(s), "
+        f"{len(emails)} public email(s), {len(phones)} public phone number(s), "
+        f"and {len(department_routes)} likely routing department(s)."
+    )
+    best_contact = _choose_best_contact(candidates, desired_contact_type)
+
+    return {
+        "verified_entity": {
+            "name": entity_name or target_name,
+            "website": base_url,
+            "address": address,
+            "city_state": city_state,
+            "entity_type": "public_nonprofit_match" if nonprofit_signals else "public_website_match",
+        },
+        "lead_relevance": {
+            "reason": lead_context or "No L2 context provided.",
+            "summary": evidence_summary,
+            "viability": recommendation,
+        },
+        "best_contact": best_contact,
+        "decision_maker_map": candidates,
+        "department_routes": department_routes,
+        "contact_ladder": contact_ladder,
+        "source_trail": source_trail,
+        "recommendation": recommendation,
+        "reviewed_pages": [page.url for page in pages],
+        "nonprofit_signals": nonprofit_signals,
+    }
