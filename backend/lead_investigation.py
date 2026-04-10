@@ -119,6 +119,142 @@ QUERY_VARIANTS = (
     "contact",
 )
 NOISY_NAME_PREFIXES = {"us", "our", "meet", "team", "staff", "board", "leadership", "contact"}
+PUBLIC_INSTITUTION_TOKENS = (
+    "city of",
+    "county",
+    "school district",
+    "public school",
+    "state of",
+    "department of",
+    "university",
+    "college",
+    "public works",
+    "library",
+    "housing authority",
+    "district",
+)
+CONTRACTOR_TOKENS = (
+    "construction",
+    "contractor",
+    "builders",
+    "builder",
+    "mechanical",
+    "electric",
+    "electrical",
+    "plumbing",
+    "roofing",
+    "excavation",
+    "hvac",
+    "heating",
+    "cooling",
+    "sheet metal",
+    "engineering",
+    "development",
+)
+RETAIL_TOKENS = (
+    "store",
+    "market",
+    "grocery",
+    "restaurant",
+    "hotel",
+    "resort",
+    "pharmacy",
+    "bank",
+    "credit union",
+    "retail",
+    "outlet",
+    "fitness center",
+    "fitness club",
+)
+ENTITY_PROFILES = {
+    "nonprofit": {
+        "label": "Nonprofit / community organization",
+        "query_variants": (
+            "board of directors",
+            "board chair",
+            "executive director",
+            "ceo",
+            "staff",
+            "leadership",
+            "contact",
+            "form 990",
+            "facilities manager",
+            "operations manager",
+        ),
+        "link_hints": ("board", "trustees", "governance", "leadership", "staff", "team", "contact"),
+        "role_boost_terms": ("executive director", "ceo", "board chair", "facilities manager", "operations director"),
+        "department_boost_terms": ("facilities", "operations", "administrative office"),
+        "strategy_summary": "Favor board, executive leadership, staff directories, and nonprofit public-record traces.",
+    },
+    "public_institution": {
+        "label": "Public institution / civic entity",
+        "query_variants": (
+            "facilities director",
+            "maintenance supervisor",
+            "operations director",
+            "capital projects",
+            "public works",
+            "administration",
+            "leadership",
+            "contact",
+        ),
+        "link_hints": ("departments", "administration", "leadership", "staff", "facilities", "projects", "contact"),
+        "role_boost_terms": ("facilities director", "public works", "maintenance supervisor", "operations director", "administrator"),
+        "department_boost_terms": ("facilities", "maintenance", "operations", "administration"),
+        "strategy_summary": "Favor facilities, maintenance, administration, and capital-project signals over board-style outreach.",
+    },
+    "contractor_builder": {
+        "label": "Contractor / builder / trades business",
+        "query_variants": (
+            "owner",
+            "principal",
+            "project manager",
+            "operations manager",
+            "estimating",
+            "office manager",
+            "leadership",
+            "contact",
+        ),
+        "link_hints": ("about", "team", "leadership", "projects", "services", "contact"),
+        "role_boost_terms": ("owner", "principal", "project manager", "operations manager", "office manager"),
+        "department_boost_terms": ("operations", "construction", "administrative office"),
+        "strategy_summary": "Favor owners, project managers, operations leaders, and office routing over board/governance sources.",
+    },
+    "retail_multi_site": {
+        "label": "Retail / multi-site operator",
+        "query_variants": (
+            "facilities manager",
+            "regional manager",
+            "store development",
+            "construction manager",
+            "real estate",
+            "operations manager",
+            "contact",
+        ),
+        "link_hints": ("locations", "about", "leadership", "real-estate", "contact", "team"),
+        "role_boost_terms": ("facilities manager", "regional manager", "construction manager", "real estate", "operations manager"),
+        "department_boost_terms": ("facilities", "operations", "capital projects"),
+        "strategy_summary": "Favor facilities, regional operations, store development, and real-estate/construction routes.",
+    },
+    "private_company": {
+        "label": "Private company / LLC / corporation",
+        "query_variants": (
+            "leadership",
+            "team",
+            "contact",
+            "operations manager",
+            "facilities manager",
+            "maintenance manager",
+            "office manager",
+        ),
+        "link_hints": ("about", "leadership", "team", "contact", "staff"),
+        "role_boost_terms": ("operations manager", "facilities manager", "maintenance manager", "office manager", "director"),
+        "department_boost_terms": ("facilities", "maintenance", "operations", "administrative office"),
+        "strategy_summary": "Favor operations, facilities, maintenance, and office-routing signals from company-controlled public sources.",
+    },
+}
+
+DEFAULT_PROFILE_KEY = "private_company"
 
 
 class LeadInvestigationError(RuntimeError):
@@ -329,26 +465,107 @@ def _parse_page(url: str, html: str) -> FetchedPage:
     )
 
 
-def _build_search_queries(target_name: str, city_state: str, website: str, lead_context: str) -> list[str]:
+def _profile_config(profile_key: str) -> dict:
+    return ENTITY_PROFILES.get(profile_key, ENTITY_PROFILES[DEFAULT_PROFILE_KEY])
+
+
+def _detect_entity_profile(
+    *,
+    target_name: str,
+    website: str,
+    lead_context: str,
+    combined_text: str = "",
+) -> str:
+    primary_evidence = " ".join(
+        part
+        for part in [target_name, website, lead_context]
+        if part
+    ).lower()
+    secondary_evidence = (combined_text or "").lower()
+
+    scores = {
+        "nonprofit": 0,
+        "public_institution": 0,
+        "contractor_builder": 0,
+        "retail_multi_site": 0,
+        DEFAULT_PROFILE_KEY: 1,
+    }
+
+    token_groups = {
+        "nonprofit": NONPROFIT_TOKENS,
+        "public_institution": PUBLIC_INSTITUTION_TOKENS,
+        "contractor_builder": CONTRACTOR_TOKENS,
+        "retail_multi_site": RETAIL_TOKENS,
+    }
+
+    for profile_key, tokens in token_groups.items():
+        for token in tokens:
+            if token in primary_evidence:
+                scores[profile_key] += 4
+            elif token in secondary_evidence:
+                scores[profile_key] += 1
+
+    if re.search(r"\b(llc|inc|corp|corporation|co\.)\b", primary_evidence):
+        scores[DEFAULT_PROFILE_KEY] += 3
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_key, best_score = ranked[0]
+    if best_score <= 1:
+        return DEFAULT_PROFILE_KEY
+    return best_key
+
+
+def _build_search_queries(
+    target_name: str,
+    city_state: str,
+    website: str,
+    lead_context: str,
+    profile_key: str,
+) -> list[str]:
     base = " ".join(part for part in [target_name, city_state] if part).strip()
     if not base:
         return []
+    profile = _profile_config(profile_key)
     queries: list[str] = []
-    for variant in QUERY_VARIANTS:
+    for variant in profile.get("query_variants", QUERY_VARIANTS):
         queries.append(f"{base} {variant}")
     if website:
         host = parse.urlparse(website).netloc.lower().replace("www.", "")
         if host:
-            for variant in ("leadership", "staff", "board", "contact"):
+            for variant in profile.get("query_variants", QUERY_VARIANTS)[:5]:
                 queries.append(f"site:{host} {target_name} {variant}")
     if lead_context and "rebate" in lead_context.lower():
         queries.append(f"{base} facilities manager rebate")
-    if any(token in base.lower() for token in NONPROFIT_TOKENS):
+    if profile_key == "nonprofit":
         queries.extend(
             [
                 f"{base} board of directors",
                 f"{base} executive director",
                 f"{base} form 990",
+            ]
+        )
+    if profile_key == "public_institution":
+        queries.extend(
+            [
+                f"{base} facilities director",
+                f"{base} public works",
+                f"{base} capital projects",
+            ]
+        )
+    if profile_key == "contractor_builder":
+        queries.extend(
+            [
+                f"{base} owner",
+                f"{base} project manager",
+                f"{base} estimating",
+            ]
+        )
+    if profile_key == "retail_multi_site":
+        queries.extend(
+            [
+                f"{base} regional manager",
+                f"{base} store development",
+                f"{base} facilities manager",
             ]
         )
     deduped: list[str] = []
@@ -385,10 +602,11 @@ def _fetch_public_search_results(
     city_state: str,
     website: str,
     lead_context: str,
+    profile_key: str,
 ) -> list[SearchResult]:
     results: list[SearchResult] = []
     seen_urls: set[str] = set()
-    for query in _build_search_queries(target_name, city_state, website, lead_context):
+    for query in _build_search_queries(target_name, city_state, website, lead_context, profile_key):
         search_url = "https://html.duckduckgo.com/html/?q=" + parse.quote_plus(query)
         html = _fetch_optional_url(search_url)
         if not html:
@@ -405,10 +623,13 @@ def _fetch_public_search_results(
     return results
 
 
-def _pick_relevant_links(base_url: str, links: Iterable[str]) -> list[str]:
+def _pick_relevant_links(base_url: str, links: Iterable[str], profile_key: str) -> list[str]:
     base_host = parse.urlparse(base_url).netloc.lower()
+    profile = _profile_config(profile_key)
+    profile_hints = tuple(profile.get("link_hints", ()))
     chosen: list[str] = []
     seen: set[str] = set()
+    secondary_matches: list[str] = []
     for link in links:
         parsed = parse.urlparse(link)
         if parsed.scheme not in {"http", "https"}:
@@ -419,11 +640,18 @@ def _pick_relevant_links(base_url: str, links: Iterable[str]) -> list[str]:
         lowered = normalized.lower()
         if lowered in seen:
             continue
-        if any(hint in lowered for hint in CONTACT_PATH_HINTS):
+        if any(hint in lowered for hint in profile_hints):
             seen.add(lowered)
             chosen.append(normalized)
+        elif any(hint in lowered for hint in CONTACT_PATH_HINTS):
+            seen.add(lowered)
+            secondary_matches.append(normalized)
         if len(chosen) >= MAX_WEBSITE_PAGES - 1:
             break
+    for link in secondary_matches:
+        if len(chosen) >= MAX_WEBSITE_PAGES - 1:
+            break
+        chosen.append(link)
     return chosen
 
 
@@ -634,11 +862,12 @@ def _supports_for_page(page: FetchedPage) -> str:
     return "Public company/contact information"
 
 
-def _rank_contact_candidate(candidate: dict, desired_contact_type: str) -> int:
+def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_key: str) -> int:
     score = 0
     confidence = (candidate.get("confidence") or "").lower()
     role = (candidate.get("role") or "").lower()
     source_type = (candidate.get("source_type") or "").lower()
+    profile = _profile_config(profile_key)
     if confidence == "high":
         score += 5
     elif confidence == "medium":
@@ -658,16 +887,18 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str) -> int:
         score += 2
     if any(token in role for token in ("board chair", "board president", "executive director", "ceo")):
         score += 1
+    if any(token in role for token in profile.get("role_boost_terms", ())):
+        score += 4
     return score
 
 
-def _choose_best_contact(candidates: list[dict], desired_contact_type: str) -> dict | None:
+def _choose_best_contact(candidates: list[dict], desired_contact_type: str, profile_key: str) -> dict | None:
     if not candidates:
         return None
     ranked = sorted(
         candidates,
         key=lambda item: (
-            _rank_contact_candidate(item, desired_contact_type),
+            _rank_contact_candidate(item, desired_contact_type, profile_key),
             item.get("full_name", ""),
         ),
         reverse=True,
@@ -706,9 +937,14 @@ def investigate_public_lead(
         )
 
     base_url = _normalize_url(website)
+    initial_profile_key = _detect_entity_profile(
+        target_name=target_name,
+        website=base_url,
+        lead_context=lead_context,
+    )
     home_html = _fetch_url(base_url)
     pages: list[FetchedPage] = [_parse_page(base_url, home_html)]
-    for link in _pick_relevant_links(base_url, pages[0].links):
+    for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key):
         try:
             html = _fetch_url(link)
         except LeadInvestigationError:
@@ -720,6 +956,7 @@ def investigate_public_lead(
         city_state=city_state,
         website=base_url,
         lead_context=lead_context,
+        profile_key=initial_profile_key,
     )
     for result in search_results:
         pages.append(_search_result_to_page(result))
@@ -731,6 +968,13 @@ def investigate_public_lead(
         raise LeadInvestigationError(
             "FieldOps reached the public website but could not extract usable public text."
         )
+    profile_key = _detect_entity_profile(
+        target_name=target_name,
+        website=base_url,
+        lead_context=lead_context,
+        combined_text=combined_text,
+    )
+    profile = _profile_config(profile_key)
 
     emails = _extract_emails(combined_text)
     phones = _extract_phones(combined_text)
@@ -829,7 +1073,14 @@ def investigate_public_lead(
         f"{len(emails)} public email(s), {len(phones)} public phone number(s), "
         f"and {len(department_routes)} likely routing department(s)."
     )
-    best_contact = _choose_best_contact(candidates, desired_contact_type)
+    best_contact = _choose_best_contact(candidates, desired_contact_type, profile_key)
+    entity_type = {
+        "nonprofit": "public_nonprofit_match",
+        "public_institution": "public_institution_match",
+        "contractor_builder": "contractor_builder_match",
+        "retail_multi_site": "retail_multi_site_match",
+        "private_company": "private_company_match",
+    }.get(profile_key, "public_website_match")
 
     return {
         "verified_entity": {
@@ -837,12 +1088,17 @@ def investigate_public_lead(
             "website": base_url,
             "address": address,
             "city_state": city_state,
-            "entity_type": "public_nonprofit_match" if nonprofit_signals else "public_website_match",
+            "entity_type": entity_type,
         },
         "lead_relevance": {
             "reason": lead_context or "No L2 context provided.",
             "summary": evidence_summary,
             "viability": recommendation,
+        },
+        "investigation_profile": {
+            "key": profile_key,
+            "label": profile["label"],
+            "strategy_summary": profile["strategy_summary"],
         },
         "best_contact": best_contact,
         "decision_maker_map": candidates,

@@ -365,6 +365,7 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
         )
         verified_entity = investigation["verified_entity"]
         lead_relevance = investigation["lead_relevance"]
+        investigation_profile = investigation.get("investigation_profile", {})
         best_contact = investigation.get("best_contact")
         decision_makers = investigation["decision_maker_map"]
         department_routes = investigation.get("department_routes", [])
@@ -422,7 +423,11 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
                 f"- Name: {verified_entity['name']}\n"
                 f"- Website: {verified_entity['website']}\n"
                 f"- Address: {verified_entity['address'] or '[not confirmed]'}\n"
-                f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n\n"
+                f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n"
+                f"- Entity Type: {verified_entity['entity_type']}\n\n"
+                "Investigation Profile:\n"
+                f"- Profile: {investigation_profile.get('label', '[not set]')}\n"
+                f"- Strategy: {investigation_profile.get('strategy_summary', '[not set]')}\n\n"
                 "Lead Relevance:\n"
                 f"- Reason: {lead_relevance['reason']}\n"
                 f"- Summary: {lead_relevance['summary']}\n"
