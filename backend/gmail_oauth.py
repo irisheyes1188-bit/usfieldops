@@ -33,8 +33,11 @@ def _runtime_token_path() -> Path:
     if SOURCE_TOKEN_PATH.parent.as_posix().startswith("/etc/secrets"):
         RUNTIME_DATA_DIR.mkdir(parents=True, exist_ok=True)
         runtime_token = RUNTIME_DATA_DIR / SOURCE_TOKEN_PATH.name
-        if SOURCE_TOKEN_PATH.exists() and not runtime_token.exists():
-            shutil.copyfile(SOURCE_TOKEN_PATH, runtime_token)
+        if SOURCE_TOKEN_PATH.exists():
+            source_bytes = SOURCE_TOKEN_PATH.read_bytes()
+            runtime_bytes = runtime_token.read_bytes() if runtime_token.exists() else None
+            if runtime_bytes != source_bytes:
+                shutil.copyfile(SOURCE_TOKEN_PATH, runtime_token)
         return runtime_token
     return SOURCE_TOKEN_PATH
 
