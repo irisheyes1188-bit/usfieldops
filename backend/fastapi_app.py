@@ -16,10 +16,7 @@ from calendar_oauth import (
     list_upcoming_events,
 )
 from runner import (
-    build_action_result,
-    build_empty_payload_result,
-    build_mock_result,
-    classify_mission,
+    execute_mission,
 )
 from storage import ensure_state_file, load_state, save_state
 
@@ -36,43 +33,7 @@ def _process_mission(mission_id: str) -> dict:
     if mission is None:
         raise HTTPException(status_code=404, detail="mission not found")
 
-    mission.status = "dispatched"
-    classification = classify_mission(mission)
-    mission.executionType = classification["execution_type"]
-    mission.actionType = classification["action_type"]
-
-    has_payload = any(
-        [
-            (mission.objective or "").strip(),
-            (mission.inputs or "").strip(),
-            (mission.expectedOutput or "").strip(),
-            (mission.prompt or "").strip(),
-        ]
-    )
-    if not has_payload:
-        result = build_empty_payload_result(mission)
-        mission.actionStatus = result.get("action_status", "missing_payload")
-        mission.actionDetails = result.get("action_details") or None
-    elif mission.executionType == "action":
-        result = build_action_result(mission, mission.actionType)
-        mission.actionStatus = result.get("action_status", "pending_external")
-        mission.actionDetails = result.get("action_details") or {
-            "action_required": result.get("action_required", False),
-            "action_type": result.get("action_type", mission.actionType),
-            "action_completed": result.get("action_completed", False),
-        }
-    else:
-        result = build_mock_result(mission)
-        mission.actionStatus = ""
-        mission.actionDetails = None
-
-    mission.mockResult = result
-    mission.resultSummary = result["summary"]
-    mission.resultBody = result["full_output"]
-    mission.followUp = result["follow_up_needed"]
-    mission.carryForward = result["carry_forward"]
-    mission.status = "waiting"
-
+    result = execute_mission(mission)
     saved = save_state(state)
     saved_mission = next((m for m in saved.missions if m.id == mission_id), None)
     return {

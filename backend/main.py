@@ -6,15 +6,18 @@ import re
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+from calendar_oauth import (
+    CalendarAuthRequiredError,
+    CalendarDependencyError,
+    list_upcoming_events,
+)
 from config import load_config
 from models import AppState
 from notion_sync import NotionSyncError, build_end_of_day_payload, sync_end_of_day_to_notion
 from runner import (
-    build_action_result,
-    build_empty_payload_result,
-    build_mock_result,
-    classify_mission,
+    execute_mission,
 )
 from storage import ensure_state_file, load_state, save_state
 
@@ -69,7 +72,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         self.log_request_line("GET", path)
         if path == "/api/health":
             self.send_json({"ok": True, "service": "fieldops-backend"})
@@ -77,9 +82,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self.send_json(load_state().model_dump(mode="json"))
             return
+        if path == "/api/calendar/upcoming":
+            try:
+                limit = int(query.get("limit", ["10"])[0])
+                days = int(query.get("days", ["7"])[0])
+            except ValueError:
+                self.send_json({"error": "invalid query parameters"}, 400)
+                return
+            if limit < 1 or limit > 50 or days < 1 or days > 30:
+                self.send_json({"error": "query parameters out of range"}, 400)
+                return
+            try:
+                events = list_upcoming_events(limit=limit, days_ahead=days)
+            except (CalendarAuthRequiredError, CalendarDependencyError) as exc:
+                self.send_json({"error": str(exc)}, 503)
+                return
+            except Exception as exc:
+                self.send_json({"error": f"Calendar fetch failed: {exc}"}, 500)
+                return
+            self.send_json({"ok": True, "events": events})
+            return
         if path == "/api/notion/end-of-day":
             state = load_state()
-            day = self.path.split("date=", 1)[1] if "date=" in self.path else None
+            day = query.get("date", [None])[0]
             payload = build_end_of_day_payload(state, date_str=day)
             self.send_json(payload.model_dump(mode="json"))
             return
@@ -89,7 +114,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_file(FRONTEND_DIR / path.lstrip("/"))
 
     def do_POST(self) -> None:
-        path = self.path.split("?", 1)[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         self.log_request_line("POST", path)
         if path == "/api/state":
             state = AppState.model_validate(self.read_json())
@@ -97,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "state": saved.model_dump(mode="json")})
             return
         if path == "/api/notion/end-of-day/sync":
-            day = self.path.split("date=", 1)[1] if "date=" in self.path else None
+            day = query.get("date", [None])[0]
             payload = build_end_of_day_payload(load_state(), date_str=day)
             try:
                 result = sync_end_of_day_to_notion(payload)
@@ -114,40 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "mission not found"}, 404)
                 return
 
-            mission.status = "dispatched"
-            classification = classify_mission(mission)
-            mission.executionType = classification["execution_type"]
-            mission.actionType = classification["action_type"]
-            has_payload = any(
-                [
-                    (mission.objective or "").strip(),
-                    (mission.inputs or "").strip(),
-                    (mission.expectedOutput or "").strip(),
-                    (mission.prompt or "").strip(),
-                ]
-            )
-            if not has_payload:
-                result = build_empty_payload_result(mission)
-                mission.actionStatus = result.get("action_status", "missing_payload")
-                mission.actionDetails = result.get("action_details") or None
-            elif mission.executionType == "action":
-                result = build_action_result(mission, mission.actionType)
-                mission.actionStatus = result.get("action_status", "pending_external")
-                mission.actionDetails = result.get("action_details") or {
-                    "action_required": result.get("action_required", False),
-                    "action_type": result.get("action_type", mission.actionType),
-                    "action_completed": result.get("action_completed", False),
-                }
-            else:
-                result = build_mock_result(mission)
-                mission.actionStatus = ""
-                mission.actionDetails = None
-            mission.mockResult = result
-            mission.resultSummary = result["summary"]
-            mission.resultBody = result["full_output"]
-            mission.followUp = result["follow_up_needed"]
-            mission.carryForward = result["carry_forward"]
-            mission.status = "waiting"
+            result = execute_mission(mission)
             saved = save_state(state)
             saved_mission = next((m for m in saved.missions if m.id == mission_id), None)
             self.send_json(
