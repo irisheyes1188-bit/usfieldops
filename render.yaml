@@ -1,5 +1,9 @@
 services:
   - type: web
+    name: fieldops-web
+    runtime: static
+    staticPublishPath: ./frontend
+  - type: web
     name: fieldops-api
     runtime: docker
     plan: starter
@@ -17,7 +21,7 @@ services:
       - key: FIELDOPS_API_BASE_URL
         value: https://api.usfieldops.com/api
       - key: FIELDOPS_ALLOWED_ORIGINS
-        value: https://usfieldops.com,https://www.usfieldops.com
+        value: https://usfieldops.com,https://www.usfieldops.com,https://fieldops-web.onrender.com
       - key: FIELDOPS_SERVE_FRONTEND
         value: "false"
       - key: FIELDOPS_RELOAD
