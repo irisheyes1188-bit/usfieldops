@@ -470,15 +470,11 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
                 f"- Name: {verified_entity['name']}\n"
                 f"- Website: {verified_entity['website']}\n"
                 f"- Address: {verified_entity['address'] or '[not confirmed]'}\n"
-<<<<<<< HEAD
                 f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n"
                 f"- Entity Type: {verified_entity['entity_type']}\n\n"
                 "Investigation Profile:\n"
                 f"- Profile: {investigation_profile.get('label', '[not set]')}\n"
                 f"- Strategy: {investigation_profile.get('strategy_summary', '[not set]')}\n\n"
-=======
-                f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n\n"
->>>>>>> 0531c02 (Fix hosted auth and Gmail mission parsing)
                 "Lead Relevance:\n"
                 f"- Reason: {lead_relevance['reason']}\n"
                 f"- Summary: {lead_relevance['summary']}\n"
