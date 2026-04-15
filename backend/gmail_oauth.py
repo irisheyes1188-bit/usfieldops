@@ -44,6 +44,7 @@ def _runtime_token_path() -> Path:
 
 def _require_google_libs():
     try:
+        from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -54,11 +55,11 @@ def _require_google_libs():
             "Missing Gmail OAuth dependencies. Install "
             "google-api-python-client google-auth-httplib2 google-auth-oauthlib."
         ) from exc
-    return Request, Credentials, InstalledAppFlow, build, HttpError
+    return RefreshError, Request, Credentials, InstalledAppFlow, build, HttpError
 
 
 def get_gmail_credentials(interactive: bool = False):
-    Request, Credentials, InstalledAppFlow, _, _ = _require_google_libs()
+    RefreshError, Request, Credentials, InstalledAppFlow, _, _ = _require_google_libs()
     token_path = _runtime_token_path()
 
     creds = None
@@ -69,9 +70,17 @@ def get_gmail_credentials(interactive: bool = False):
         return creds
 
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        return creds
+        try:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+            return creds
+        except RefreshError as exc:
+            if not interactive:
+                raise GmailAuthRequiredError(
+                    "Gmail OAuth token is expired or revoked. "
+                    f"Run authorize_gmail.py to replace {token_path}."
+                ) from exc
+            creds = None
 
     if not interactive:
         raise GmailAuthRequiredError(
@@ -92,7 +101,7 @@ def get_gmail_credentials(interactive: bool = False):
 
 
 def build_gmail_service(interactive: bool = False):
-    _, _, _, build, _ = _require_google_libs()
+    _, _, _, _, build, _ = _require_google_libs()
     creds = get_gmail_credentials(interactive=interactive)
     return build("gmail", "v1", credentials=creds)
 

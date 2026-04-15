@@ -243,6 +243,12 @@ textarea.inp.tall{min-height:130px;}
 .m-result details{margin-top:6px;}
 .m-result summary{font-family:var(--mono);font-size:9px;color:var(--lo);cursor:pointer;}
 .m-result-body{margin-top:6px;font-family:var(--mono);font-size:10px;line-height:1.6;color:var(--mid);white-space:pre-wrap;}
+.m-result-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin-top:8px;}
+.m-result-kv{padding:6px 8px;border-radius:4px;background:rgba(0,0,0,.2);border:1px solid rgba(180,220,255,.08);}
+.m-result-k{font-family:var(--mono);font-size:8px;letter-spacing:1.2px;text-transform:uppercase;color:var(--lo);}
+.m-result-v{font-family:var(--mono);font-size:10px;line-height:1.5;color:var(--hi);margin-top:2px;word-break:break-word;}
+.badge-live{color:var(--green);border-color:rgba(61,220,132,.3);background:rgba(61,220,132,.08);}
+.badge-actionwait{color:var(--orange);border-color:rgba(249,115,22,.3);background:rgba(249,115,22,.08);}
 .empty-q{text-align:center;padding:36px 20px;font-family:var(--mono);font-size:11px;color:var(--lo);letter-spacing:1.5px;line-height:1.8;}
 
 /* ═══ MY OPS ════════════════════════════════════════════ */
@@ -332,6 +338,9 @@ textarea.inp.tall{min-height:130px;}
 .modal-title{font-family:var(--head);font-size:18px;font-weight:700;color:var(--accent);letter-spacing:2px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
 .modal-close{cursor:pointer;color:var(--lo);font-size:18px;background:none;border:none;transition:color .2s;}
 .modal-close:hover{color:var(--hi);}
+.debrief-meta-panel{display:none;margin-bottom:12px;padding:10px;border-radius:7px;border:1px solid rgba(0,200,255,.14);background:rgba(0,200,255,.04);}
+.debrief-meta-panel.open{display:block;}
+.debrief-meta-title{font-family:var(--mono);font-size:9px;letter-spacing:1.8px;text-transform:uppercase;color:var(--accent);margin-bottom:8px;}
 
 /* ═══ TOAST ════════════════════════════════════════════ */
 .toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid var(--accent);color:var(--accent);font-family:var(--mono);font-size:12px;padding:10px 18px;border-radius:6px;box-shadow:0 4px 20px rgba(0,200,255,.2);transform:translateY(80px);opacity:0;transition:all .3s;z-index:999;}
@@ -559,10 +568,10 @@ textarea.inp.tall{min-height:130px;}
 <!-- ══ AGENDA ════════════════════════════════════════════ -->
 <div class="section" id="section-agenda">
   <div class="section-header">
-    <div><div class="section-title">Agenda</div><div class="section-sub">7-day view · updated via Agent Input</div></div>
-    <button class="btn btn-purple btn-sm" onclick="openUniversalInput()">⬇ Agent Input</button>
+    <div><div class="section-title">Agenda</div><div class="section-sub">7-day view · Google Calendar source of truth</div></div>
+    <button class="btn btn-purple btn-sm" onclick="refreshLiveCalendarFeed()">↻ Refresh Calendar</button>
   </div>
-  <div id="agendaContent"><div class="agenda-empty">No events loaded. Use ⬇ Agent Input and paste an EVENT | block from Chuck.</div></div>
+  <div id="agendaContent"><div class="agenda-empty">No Google Calendar events loaded yet.</div></div>
 </div>
 
 <!-- ══ TEMPLATES ════════════════════════════════════════ -->
@@ -646,6 +655,10 @@ textarea.inp.tall{min-height:130px;}
   <div class="modal">
     <div class="modal-title"><button class="modal-close" onclick="closeModal('debriefModal')">✕</button>📋 Complete Mission — Log Result</div>
     <input type="hidden" id="debriefId"/>
+    <div class="debrief-meta-panel" id="debriefActionMetaPanel">
+      <div class="debrief-meta-title">Returned Action Metadata</div>
+      <div id="debriefActionMeta"></div>
+    </div>
     <div class="field"><label class="lbl">Result Summary</label><textarea class="inp" id="debriefSummary" placeholder="What was accomplished?"></textarea></div>
     <div class="field"><label class="lbl">Output / Result Body</label><textarea class="inp tall" id="debriefBody" placeholder="Paste agent output, links, or full result..."></textarea></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -700,23 +713,33 @@ var editingId = null;
 var composerMissionMeta = {missionClass:'',actionType:'',sourceContext:'',parentMissionId:''};
 var hdr = null;
 function trimTrailingSlash(v){return (v||'').replace(/\/+$/,'');}
+function normalizeApiBase(v){
+  var clean=trimTrailingSlash(v||'');
+  if(/^https:\/\/api\.usfieldops\.com\/api$/i.test(clean)){
+    return 'https://fieldops-api.onrender.com/api';
+  }
+  return clean;
+}
 function resolveApiBase(){
   var params=new URLSearchParams(window.location.search||'');
-  var fromQuery=trimTrailingSlash(params.get('api_base'));
+  var fromQuery=normalizeApiBase(params.get('api_base'));
   if(fromQuery){
     try{localStorage.setItem('fieldops_api_base',fromQuery);}catch(e){}
     return fromQuery;
   }
-  var fromWindow=trimTrailingSlash(window.FIELDOPS_API_BASE||'');
+  var fromWindow=normalizeApiBase(window.FIELDOPS_API_BASE||'');
   if(fromWindow)return fromWindow;
   try{
-    var stored=trimTrailingSlash(localStorage.getItem('fieldops_api_base')||'');
-    if(stored)return stored;
+    var stored=normalizeApiBase(localStorage.getItem('fieldops_api_base')||'');
+    if(stored){
+      localStorage.setItem('fieldops_api_base',stored);
+      return stored;
+    }
   }catch(e){}
   return '/api';
 }
 window.setFieldOpsApiBase=function(nextBase){
-  var clean=trimTrailingSlash(nextBase||'');
+  var clean=normalizeApiBase(nextBase||'');
   try{
     if(clean)localStorage.setItem('fieldops_api_base',clean);
     else localStorage.removeItem('fieldops_api_base');
@@ -772,8 +795,8 @@ function collectAppState(){
   };
 }
 function applyAppState(state){
-  missions = Array.isArray(state.missions) ? state.missions : [];
-  completedMissions = Array.isArray(state.completedMissions) ? state.completedMissions : [];
+  missions = normalizeMissionCollection(state.missions);
+  completedMissions = normalizeMissionCollection(state.completedMissions);
   myTasks = Array.isArray(state.myTasks) ? state.myTasks : [];
   activityItems = Array.isArray(state.activityItems) ? state.activityItems : [];
   archivedItems = Array.isArray(state.archivedItems) ? state.archivedItems : [];
@@ -800,9 +823,95 @@ function isHostedApi(){
 function backendLabel(){
   return isHostedApi() ? 'Hosted Backend' : 'Local Backend';
 }
+function parseActionDetailsFromResultBody(mission){
+  if(!mission)return null;
+  var body=(mission.resultBody||(mission.mockResult&&mission.mockResult.full_output)||'').trim();
+  if(!body)return null;
+  var details={};
+  var actionType=mission.actionType||(mission.mockResult&&mission.mockResult.action_type)||'';
+  if(actionType==='gmail_create_draft'){
+    var draftId=body.match(/^\s*Draft ID:\s*(.+)$/im);
+    var messageId=body.match(/^\s*Message ID:\s*(.+)$/im);
+    var subject=body.match(/^\s*Subject:\s*(.+)$/im);
+    var to=body.match(/^\s*To:\s*(.+)$/im);
+    var cc=body.match(/^\s*Cc:\s*(.+)$/im);
+    var bcc=body.match(/^\s*Bcc:\s*(.+)$/im);
+    if(draftId)details.draft_id=draftId[1].trim();
+    if(messageId)details.message_id=messageId[1].trim();
+    if(subject)details.subject=subject[1].trim();
+    if(to)details.to=to[1].trim()==='[blank]'?'':to[1].trim();
+    if(cc)details.cc=cc[1].trim()==='[blank]'?'':cc[1].trim();
+    if(bcc)details.bcc=bcc[1].trim()==='[blank]'?'':bcc[1].trim();
+    if(Object.keys(details).length){
+      details.provider='gmail';
+      details.operation='create_draft';
+      details.result_label='Live Gmail draft';
+    }
+  }
+  return Object.keys(details).length ? details : null;
+}
+function normalizeMissionForDisplay(mission){
+  if(!mission||typeof mission!=='object')return mission;
+  if(!mission.resultSummary&&mission.mockResult&&mission.mockResult.summary)mission.resultSummary=mission.mockResult.summary;
+  if(!mission.resultBody&&mission.mockResult&&mission.mockResult.full_output)mission.resultBody=mission.mockResult.full_output;
+  if(!mission.actionStatus&&mission.mockResult&&mission.mockResult.action_status)mission.actionStatus=mission.mockResult.action_status;
+  if(!mission.actionDetails&&mission.mockResult&&mission.mockResult.action_details)mission.actionDetails=mission.mockResult.action_details;
+  if(!mission.actionDetails){
+    var parsedDetails=parseActionDetailsFromResultBody(mission);
+    if(parsedDetails)mission.actionDetails=parsedDetails;
+  }
+  return mission;
+}
+function normalizeMissionCollection(list){
+  return (Array.isArray(list)?list:[]).map(function(m){return normalizeMissionForDisplay(m);});
+}
+function getMissionActionDetails(mission){
+  normalizeMissionForDisplay(mission);
+  return mission&&mission.actionDetails?mission.actionDetails:{};
+}
+function isLiveActionMission(mission){
+  if(!mission)return false;
+  normalizeMissionForDisplay(mission);
+  return !!(
+    mission.executionType==='action'
+    || mission.actionType
+    || mission.actionStatus
+    || (mission.actionDetails&&Object.keys(mission.actionDetails).length)
+    || (mission.mockResult&&mission.mockResult.action_type)
+  );
+}
+function getActionStatusBadge(mission){
+  var status=(mission&&mission.actionStatus)||(mission&&mission.mockResult&&mission.mockResult.action_status)||'';
+  if(!status)return '';
+  var isDone=/^(completed|investigated|handoff_created)$/i.test(status);
+  return '<span class="badge '+(isDone?'badge-live':'badge-actionwait')+'">'+esc(status.replace(/_/g,' ').toUpperCase())+'</span>';
+}
+function renderActionMetadataHtml(mission){
+  var details=getMissionActionDetails(mission);
+  if(!details||!Object.keys(details).length)return '';
+  var fields=[];
+  function pushField(label,value){
+    if(value===undefined||value===null)return;
+    var text=String(value).trim();
+    if(!text)return;
+    fields.push('<div class="m-result-kv"><div class="m-result-k">'+esc(label)+'</div><div class="m-result-v">'+esc(text)+'</div></div>');
+  }
+  pushField('Result', details.result_label || details.operation || '');
+  pushField('Draft ID', details.draft_id);
+  pushField('Message ID', details.message_id);
+  pushField('To', details.to);
+  pushField('Cc', details.cc);
+  pushField('Bcc', details.bcc);
+  pushField('Subject', details.subject);
+  pushField('Requested Action', details.requested_action_type);
+  pushField('Event ID', details.event_id);
+  pushField('Calendar', details.calendar_id);
+  if(!fields.length)return '';
+  return '<div class="m-result-meta">'+fields.join('')+'</div>';
+}
 function missionToCalendarEvent(mission){
   if(!mission||mission.actionType!=='calendar_create_event')return null;
-  var details=mission.actionDetails||(mission.mockResult&&mission.mockResult.action_details)||{};
+  var details=getMissionActionDetails(mission);
   var eventId=details.event_id||details.eventId||'';
   var startValue=details.start||details.start_local||'';
   var endValue=details.end||details.end_local||'';
@@ -872,7 +981,11 @@ function setBackendStatus(mode,text,detail){
 }
 async function apiFetch(path,opts){
   var res = await fetch(API_BASE + path, opts || {});
-  if(!res.ok)throw new Error('HTTP ' + res.status);
+  if(!res.ok){
+    var detail='';
+    try{detail=(await res.text()||'').trim();}catch(e){}
+    throw new Error('HTTP ' + res.status + (detail?(' — ' + detail.substring(0,240)) : ''));
+  }
   return res.json();
 }
 async function saveStateNow(){
@@ -886,6 +999,7 @@ async function saveStateNow(){
       body:JSON.stringify(collectAppState())
     });
   }catch(e){
+    setBackendStatus('offline','State Save Failed',((e&&e.message)?e.message:'Unknown error')+' via '+API_BASE);
     showToast('State save failed');
   }
 }
@@ -938,6 +1052,7 @@ async function checkBackendHealth(){
 }
 function upsertMission(mission){
   if(!mission||!mission.id)return;
+  mission=normalizeMissionForDisplay(mission);
   var idx=missions.findIndex(function(x){return x.id===mission.id;});
   if(idx>=0)missions[idx]=mission;else missions.push(mission);
 }
@@ -966,6 +1081,8 @@ async function dispatchMission(id){
         nextMission.resultBody = data.result.full_output || nextMission.resultBody || '';
         nextMission.followUp = !!data.result.follow_up_needed;
         nextMission.carryForward = !!data.result.carry_forward;
+        nextMission.actionStatus = nextMission.actionStatus || data.result.action_status || '';
+        nextMission.actionDetails = nextMission.actionDetails || data.result.action_details || null;
       }
       nextMission.status = 'waiting';
       nextMission.updatedAt = new Date().toISOString();
@@ -1471,13 +1588,16 @@ function renderQueue(){
   var pri={critical:0,high:1,normal:2,low:3};
   filtered.sort(function(a,b){return (pri[a.priority]||2)-(pri[b.priority]||2);});
   filtered.forEach(function(m){
+    normalizeMissionForDisplay(m);
+    var liveAction=isLiveActionMission(m);
     var card=document.createElement('div');card.className='m-card agent-'+(m.agent||'chuck');
     var titleEl=document.createElement('div');titleEl.className='m-title';titleEl.textContent=m.title;card.appendChild(titleEl);
     var meta=document.createElement('div');meta.className='m-meta';
     meta.innerHTML='<span class="badge badge-'+(m.agent||'chuck')+'">'+(m.agent||'chuck').toUpperCase()+'</span>'
       +'<span class="badge badge-'+m.status+'">'+m.status.toUpperCase()+'</span>'
       +'<span class="badge badge-'+m.priority+'">'+m.priority.toUpperCase()+'</span>'
-      +(m.executionType==='action'?'<span class="badge badge-high">ACTION</span>':'')
+      +(liveAction?'<span class="badge badge-live">LIVE ACTION</span>':'')
+      +getActionStatusBadge(m)
       +(m.actionType?'<span class="badge badge-carry">'+esc(m.actionType.replace(/_/g,' '))+'</span>':'')
       +(m.lane?'<span class="badge badge-'+m.lane+'">'+m.lane.toUpperCase()+'</span>':'')
       +(m.template?'<span style="font-family:var(--mono);font-size:9px;color:var(--lo)">'+esc(m.template)+'</span>':'')
@@ -1496,6 +1616,7 @@ function renderQueue(){
         +(stamp?'<span style="font-family:var(--mono);font-size:9px;color:var(--lo)">'+esc(stamp)+'</span>':'')
         +'</div>'
         +'<div class="m-result-summary">'+esc(m.mockResult.summary)+'</div>'
+        +renderActionMetadataHtml(m)
         +'<details><summary>Full Output</summary><div class="m-result-body">'+esc(m.mockResult.full_output||'')+'</div></details>'
         +'</div>';
       card.insertAdjacentHTML('beforeend', resultHtml);
@@ -1504,7 +1625,7 @@ function renderQueue(){
     function mkBtn(cls,label,fn){var b=document.createElement('button');b.className='btn '+cls;b.textContent=label;b.addEventListener('click',fn);return b;}
     if(m.status==='queued')actions.appendChild(mkBtn('btn-gold btn-sm','Dispatch',(function(id){return function(){dispatchMission(id);};})(m.id)));
     if(m.status==='dispatched')actions.appendChild(mkBtn('btn-ghost btn-sm','Dispatching...',function(){}));
-    if(m.status==='waiting'&&m.mockResult)actions.appendChild(mkBtn('btn-purple btn-sm','Result Ready',(function(id){return function(){openDebrief(id);};})(m.id)));
+    if(m.status==='waiting'&&m.mockResult)actions.appendChild(mkBtn('btn-purple btn-sm','Review Result',(function(id){return function(){openDebrief(id);};})(m.id)));
     actions.appendChild(mkBtn('btn-green btn-sm','Complete',(function(id){return function(){openDebrief(id);};})(m.id)));
     actions.appendChild(mkBtn('btn-ghost btn-sm','Edit',(function(id){return function(){editMission(id);};})(m.id)));
     actions.appendChild(mkBtn('btn-ghost btn-sm','Dupe',(function(id){return function(){duplicateMission(id);};})(m.id)));
@@ -1559,6 +1680,8 @@ function duplicateMission(id){
   var m=missions.find(function(x){return x.id===id;});if(!m)return;
   var dupe=JSON.parse(JSON.stringify(m));
   dupe.id='M-'+Date.now();dupe.title=m.title+' (copy)';dupe.status='queued';dupe.prompt='';
+  dupe.resultSummary='';dupe.resultBody='';dupe.followUp=false;dupe.carryForward=false;dupe.completedAt=null;
+  dupe.mockResult=null;dupe.executionType=m.executionType||'result';dupe.actionStatus='';dupe.actionDetails=null;
   dupe.createdAt=new Date().toISOString();dupe.updatedAt=new Date().toISOString();
   missions.push(dupe);updateCounts();renderQueue();scheduleStateSave();showToast('Mission duplicated');
 }
@@ -1784,7 +1907,7 @@ function renderAgenda(){
   var filtered=CALENDAR_EVENTS.filter(function(e){
     var d=new Date(e.date+'T12:00:00');d.setHours(0,0,0,0);return d>=today&&d<=cutoff;
   });
-  if(!filtered.length){content.innerHTML='<div class="agenda-empty">No events in the next 7 days.<br>Use ⬇ Agent Input with an EVENT | block from Chuck to populate.</div>';return;}
+  if(!filtered.length){content.innerHTML='<div class="agenda-empty">No Google Calendar events in the next 7 days.</div>';return;}
   filtered.sort(function(a,b){
     if(a.date!==b.date)return a.date<b.date?-1:1;
     if(a.allDay&&!b.allDay)return 1;if(!a.allDay&&b.allDay)return -1;
@@ -1919,19 +2042,28 @@ function sendToChris(){
 // ══ DEBRIEF ═══════════════════════════════════════════════
 function openDebrief(id){
   var m=missions.find(function(x){return x.id===id;});
+  normalizeMissionForDisplay(m);
   document.getElementById('debriefId').value=id;
   document.getElementById('debriefSummary').value=(m&&m.resultSummary)||((m&&m.mockResult&&m.mockResult.summary)||'');
   document.getElementById('debriefBody').value=(m&&m.resultBody)||((m&&m.mockResult&&m.mockResult.full_output)||'');
   document.getElementById('debriefFollowUp').checked=!!((m&&m.followUp)||(m&&m.mockResult&&m.mockResult.follow_up_needed));
   document.getElementById('debriefCarry').checked=!!((m&&m.carryForward)||(m&&m.mockResult&&m.mockResult.carry_forward));
+  var metaPanel=document.getElementById('debriefActionMetaPanel');
+  var metaBody=document.getElementById('debriefActionMeta');
+  var metaHtml=renderActionMetadataHtml(m);
+  if(metaPanel&&metaBody){
+    metaBody.innerHTML=metaHtml||'';
+    metaPanel.classList.toggle('open',!!metaHtml);
+  }
   document.getElementById('debriefModal').classList.add('open');
-  if(m&&m.mockResult&&m.mockResult.summary)showToast('Mock result loaded into debrief');
+  if(m&&m.mockResult&&m.mockResult.summary)showToast((isLiveActionMission(m)?'Live action result':'Mission result')+' loaded into debrief');
 }
 function submitDebrief(){
   var id=document.getElementById('debriefId').value;
   var m=missions.find(function(x){return x.id===id;});if(!m){closeModal('debriefModal');return;}
   var completed=JSON.parse(JSON.stringify(m));
   completed.status='complete';completed.resultSummary=document.getElementById('debriefSummary').value.trim();completed.resultBody=document.getElementById('debriefBody').value.trim();completed.followUp=document.getElementById('debriefFollowUp').checked;completed.carryForward=document.getElementById('debriefCarry').checked;completed.completedAt=new Date().toISOString();
+  completed=normalizeMissionForDisplay(completed);
   completedMissions.unshift(completed);missions=missions.filter(function(x){return x.id!==id;});
   if(criticalId===id){criticalId=null;renderFocus();}
   closeModal('debriefModal');updateCounts();renderQueue();renderDebrief();scheduleStateSave();showToast('Mission complete — logged');
@@ -1947,6 +2079,8 @@ function renderDebrief(){
   if(hasMissions){
     var mHdr=document.createElement('div');mHdr.className='db-section-hdr missions';mHdr.textContent='Missions ('+completedMissions.length+')';list.appendChild(mHdr);
     completedMissions.forEach(function(m){
+      normalizeMissionForDisplay(m);
+      var liveAction=isLiveActionMission(m);
       var date=m.completedAt?new Date(m.completedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
       var mockStamp=m.mockResult&&m.mockResult.timestamp?new Date(m.mockResult.timestamp).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
       var preview=m.resultBody?m.resultBody.substring(0,220)+(m.resultBody.length>220?'...':''):'';
@@ -1955,7 +2089,8 @@ function renderDebrief(){
         +'<div class="db-meta">'
         +'<span class="badge badge-'+(m.agent||'chuck')+'">'+(m.agent||'chuck').toUpperCase()+'</span>'
         +'<span class="badge" style="color:var(--accent);border-color:rgba(0,200,255,.3);background:rgba(0,200,255,.08)">MISSION</span>'
-        +(m.mockResult?'<span class="badge badge-complete">MOCK RESULT</span>':'')
+        +(liveAction?'<span class="badge badge-live">LIVE ACTION</span>':(m.mockResult?'<span class="badge badge-complete">RESULT</span>':''))
+        +getActionStatusBadge(m)
         +(m.lane?'<span class="badge badge-'+m.lane+'">'+m.lane.toUpperCase()+'</span>':'')
         +(date?'<span style="font-family:var(--mono);font-size:9px;color:var(--lo)">'+date+'</span>':'')
         +(mockStamp?'<span style="font-family:var(--mono);font-size:9px;color:var(--accent)">'+mockStamp+'</span>':'')
@@ -1963,6 +2098,7 @@ function renderDebrief(){
         +(m.carryForward?'<span class="badge badge-carry">CARRY</span>':'')
         +'</div>'
         +(m.resultSummary?'<div class="db-result">'+esc(m.resultSummary)+'</div>':'')
+        +renderActionMetadataHtml(m)
         +(preview?'<div class="db-result" style="margin-top:6px;font-family:var(--mono);font-size:10px;white-space:pre-wrap;color:var(--mid)">'+esc(preview)+'</div>':'')
         +(m.resultBody?'<details style="margin-top:8px"><summary style="font-family:var(--mono);font-size:9px;color:var(--lo);cursor:pointer">Full Output</summary><div class="db-result" style="margin-top:5px;white-space:pre-wrap">'+esc(m.resultBody)+'</div></details>':'');
       list.appendChild(div);

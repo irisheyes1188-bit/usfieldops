@@ -43,6 +43,7 @@ def _runtime_token_path() -> Path:
 
 def _require_google_libs():
     try:
+        from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -52,11 +53,11 @@ def _require_google_libs():
             "Missing Google Calendar OAuth dependencies. Install "
             "google-api-python-client google-auth-httplib2 google-auth-oauthlib."
         ) from exc
-    return Request, Credentials, InstalledAppFlow, build
+    return RefreshError, Request, Credentials, InstalledAppFlow, build
 
 
 def get_calendar_credentials(interactive: bool = False):
-    Request, Credentials, InstalledAppFlow, _ = _require_google_libs()
+    RefreshError, Request, Credentials, InstalledAppFlow, _ = _require_google_libs()
     token_path = _runtime_token_path()
 
     creds = None
@@ -67,9 +68,17 @@ def get_calendar_credentials(interactive: bool = False):
         return creds
 
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        return creds
+        try:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+            return creds
+        except RefreshError as exc:
+            if not interactive:
+                raise CalendarAuthRequiredError(
+                    "Google Calendar OAuth token is expired or revoked. "
+                    f"Run authorize_calendar.py to replace {token_path}."
+                ) from exc
+            creds = None
 
     if not interactive:
         raise CalendarAuthRequiredError(
@@ -90,7 +99,7 @@ def get_calendar_credentials(interactive: bool = False):
 
 
 def build_calendar_service(interactive: bool = False):
-    _, _, _, build = _require_google_libs()
+    _, _, _, _, build = _require_google_libs()
     creds = get_calendar_credentials(interactive=interactive)
     return build("calendar", "v3", credentials=creds)
 

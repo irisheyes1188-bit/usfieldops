@@ -144,17 +144,16 @@ def _extract_gmail_draft_fields(mission: Mission) -> dict:
             mission.prompt or "",
         ]
     )
-    subject_match = re.search(r"(?im)^subject:\s*(.+)$", text)
-    to_match = re.search(r"(?im)^to:\s*(.+)$", text)
-    cc_match = re.search(r"(?im)^cc:\s*(.+)$", text)
-    bcc_match = re.search(r"(?im)^bcc:\s*(.+)$", text)
-    body_match = re.search(r"(?ims)^body:\s*(.+)$", text)
-
-    subject = (subject_match.group(1).strip() if subject_match else "").strip()
-    to_addr = (to_match.group(1).strip() if to_match else "").strip()
-    cc_addr = (cc_match.group(1).strip() if cc_match else "").strip()
-    bcc_addr = (bcc_match.group(1).strip() if bcc_match else "").strip()
-    body = (body_match.group(1).strip() if body_match else "").strip()
+    inputs_text = mission.inputs or text
+    subject = _extract_line_field(inputs_text, "Subject").strip()
+    to_addr = _extract_line_field(inputs_text, "To").strip()
+    cc_addr = _extract_line_field(inputs_text, "Cc").strip()
+    bcc_addr = _extract_line_field(inputs_text, "Bcc").strip()
+    body = _extract_multiline_field(
+        inputs_text,
+        "Body",
+        following_labels=("Expected Output", "Delivery", "Artifacts", "Reporting"),
+    ).strip()
 
     if not subject:
         subject = mission.title or "FieldOps Draft"
@@ -169,6 +168,23 @@ def _extract_gmail_draft_fields(mission: Mission) -> dict:
         "subject": subject,
         "body": body,
     }
+
+
+def _build_gmail_action_details(fields: dict, draft: dict | None = None) -> dict:
+    details = {
+        "provider": "gmail",
+        "operation": "create_draft",
+        "result_label": "Live Gmail draft",
+        "subject": fields.get("subject", ""),
+        "to": fields.get("to", ""),
+        "cc": fields.get("cc", ""),
+        "bcc": fields.get("bcc", ""),
+        "body_preview": (fields.get("body", "") or "").strip()[:280],
+    }
+    if draft:
+        details["draft_id"] = draft.get("draft_id", "")
+        details["message_id"] = draft.get("message_id", "")
+    return details
 
 
 def _build_fallback_handoff_fields(mission: Mission) -> dict:
@@ -217,6 +233,37 @@ def _extract_field(text: str, label: str) -> str:
             value = match.group(1).strip()
             value = re.sub(r"^[\u2013\-]\s*", "", value).strip()
             return value
+    return ""
+
+
+def _extract_line_field(text: str, label: str) -> str:
+    match = re.search(rf"(?im)^{re.escape(label)}:[ \t]*(.*)$", text)
+    return (match.group(1).strip() if match else "").strip()
+
+
+def _extract_multiline_field(text: str, label: str, following_labels: tuple[str, ...] = ()) -> str:
+    if not text.strip():
+        return ""
+    lines = text.splitlines()
+    label_prefix = f"{label.lower()}:"
+    following_prefixes = tuple(f"{item.lower()}:" for item in following_labels)
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line.lower().startswith(label_prefix):
+            continue
+        first_value = line[len(label_prefix):].strip()
+        collected: list[str] = []
+        if first_value:
+            collected.append(first_value)
+        for next_line in lines[index + 1 :]:
+            stripped = next_line.strip()
+            if following_prefixes and stripped.lower().startswith(following_prefixes):
+                break
+            if stripped:
+                collected.append(stripped)
+            elif collected:
+                collected.append("")
+        return "\n".join(collected).strip()
     return ""
 
 
@@ -423,11 +470,15 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
                 f"- Name: {verified_entity['name']}\n"
                 f"- Website: {verified_entity['website']}\n"
                 f"- Address: {verified_entity['address'] or '[not confirmed]'}\n"
+<<<<<<< HEAD
                 f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n"
                 f"- Entity Type: {verified_entity['entity_type']}\n\n"
                 "Investigation Profile:\n"
                 f"- Profile: {investigation_profile.get('label', '[not set]')}\n"
                 f"- Strategy: {investigation_profile.get('strategy_summary', '[not set]')}\n\n"
+=======
+                f"- City / State: {verified_entity['city_state'] or '[not confirmed]'}\n\n"
+>>>>>>> 0531c02 (Fix hosted auth and Gmail mission parsing)
                 "Lead Relevance:\n"
                 f"- Reason: {lead_relevance['reason']}\n"
                 f"- Summary: {lead_relevance['summary']}\n"
@@ -565,12 +616,7 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
                 "action_type": action_type,
                 "action_status": "completed",
                 "action_completed": True,
-                "action_details": {
-                    "draft_id": draft["draft_id"],
-                    "message_id": draft["message_id"],
-                    "subject": fields["subject"],
-                    "to": fields["to"],
-                },
+                "action_details": _build_gmail_action_details(fields, draft),
             }
         except (GmailAuthRequiredError, GmailDependencyError) as exc:
             return {
@@ -584,6 +630,7 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
                 "action_type": action_type,
                 "action_status": "auth_required",
                 "action_completed": False,
+                "action_details": _build_gmail_action_details(fields),
             }
         except Exception as exc:
             return {
@@ -597,6 +644,7 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
                 "action_type": action_type,
                 "action_status": "failed",
                 "action_completed": False,
+                "action_details": _build_gmail_action_details(fields),
             }
     if action_type == "calendar_create_event":
         try:
@@ -739,3 +787,46 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
         "action_status": "unsupported_action_type",
         "action_completed": False,
     }
+
+
+def mission_has_payload(mission: Mission) -> bool:
+    return any(
+        [
+            (mission.objective or "").strip(),
+            (mission.inputs or "").strip(),
+            (mission.expectedOutput or "").strip(),
+            (mission.prompt or "").strip(),
+        ]
+    )
+
+
+def execute_mission(mission: Mission) -> dict:
+    mission.status = "dispatched"
+    classification = classify_mission(mission)
+    mission.executionType = classification["execution_type"]
+    mission.actionType = classification["action_type"]
+
+    if not mission_has_payload(mission):
+        result = build_empty_payload_result(mission)
+        mission.actionStatus = result.get("action_status", "missing_payload")
+        mission.actionDetails = result.get("action_details") or None
+    elif mission.executionType == "action":
+        result = build_action_result(mission, mission.actionType)
+        mission.actionStatus = result.get("action_status", "pending_external")
+        mission.actionDetails = result.get("action_details") or {
+            "action_required": result.get("action_required", False),
+            "action_type": result.get("action_type", mission.actionType),
+            "action_completed": result.get("action_completed", False),
+        }
+    else:
+        result = build_mock_result(mission)
+        mission.actionStatus = ""
+        mission.actionDetails = None
+
+    mission.mockResult = result
+    mission.resultSummary = result["summary"]
+    mission.resultBody = result["full_output"]
+    mission.followUp = result["follow_up_needed"]
+    mission.carryForward = result["carry_forward"]
+    mission.status = "waiting"
+    return result
