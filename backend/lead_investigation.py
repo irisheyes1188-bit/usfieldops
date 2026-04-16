@@ -665,7 +665,7 @@ def _classify_public_source(url: str) -> str:
         return "business_registry"
     if any(token in host for token in ("linkedin.com", "zoominfo.com", "rocketreach.co")):
         return "public_profile"
-    if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com")):
+    if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com")):
         return "public_social"
     if any(token in host for token in LOCAL_PRESS_HINTS):
         return "local_press"
@@ -834,7 +834,7 @@ def _score_search_result_for_homepage(
         "mapquest.com",
     )
     if any(host in url for host in bad_hosts):
-        score -= 6
+        score -= 4
 
     if any(path_hint in url for path_hint in ("/locations/", "/location/", "/stores/", "/store/", "/about", "/contact")):
         score += 3
@@ -868,7 +868,7 @@ def _discover_public_homepage(
 
     if not search_results:
         raise LeadInvestigationError(
-            "FieldOps could not discover a usable public website from business-name-first search."
+            "FieldOps could not discover usable public-source results from business-name-first search."
         )
 
     ranked = sorted(
@@ -877,13 +877,7 @@ def _discover_public_homepage(
         reverse=True,
     )
 
-    company_candidates = [item for item in ranked if item.source_type == "company_website"]
-    best = company_candidates[0] if company_candidates else ranked[0]
-    if company_candidates and _score_search_result_for_homepage(best, target_name, address, city_state) < 3:
-        raise LeadInvestigationError(
-            "FieldOps found public references but could not confidently identify the official website."
-        )
-
+    best = ranked[0]
     return _normalize_url(best.url), ranked
 
 
@@ -1047,6 +1041,10 @@ def _supports_for_page(page: FetchedPage) -> str:
         return "Official public registry signal"
     if page.source_type == "local_press":
         return "Local press or expansion coverage"
+    if page.source_type == "public_social":
+        return "Public social signal"
+    if page.source_type == "public_profile":
+        return "Public professional profile"
     if "services" in lowered:
         return "Public services or trade-scope information"
     if "projects" in lowered:
@@ -1072,7 +1070,7 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 3
     else:
         score += 1
-    if source_type in {"company_website", "official_registry", "nonprofit_record", "local_press"}:
+    if source_type in {"company_website", "official_registry", "nonprofit_record", "local_press", "public_profile"}:
         score += 2
     desired_tokens = {
         token.lower()
@@ -1156,14 +1154,26 @@ def investigate_public_lead(
             profile_key=initial_profile_key,
         )
 
-    home_html = _fetch_url(base_url)
-    pages: list[FetchedPage] = [_parse_page(base_url, home_html)]
-    for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key):
-        try:
-            html = _fetch_url(link)
-        except LeadInvestigationError:
-            continue
-        pages.append(_parse_page(link, html))
+    pages: list[FetchedPage] = []
+    home_html = _fetch_optional_url(base_url)
+    if home_html:
+        pages.append(_parse_page(base_url, home_html))
+        for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key):
+            html = _fetch_optional_url(link)
+            if not html:
+                continue
+            pages.append(_parse_page(link, html))
+    else:
+        pages.append(
+            FetchedPage(
+                url=base_url,
+                title="",
+                site_name="",
+                text="",
+                links=[],
+                source_type=_classify_public_source(base_url),
+            )
+        )
 
     search_results = discovered_search_results or _fetch_public_search_results(
         target_name=target_name,
@@ -1174,13 +1184,13 @@ def investigate_public_lead(
     )
     for result in search_results:
         pages.append(_search_result_to_page(result))
-        if len(pages) >= (MAX_WEBSITE_PAGES + MAX_SEARCH_RESULTS):
+        if len(pages) >= (MAX_WEBSITE_PAGES + MAX_SEARCH_RESULTS + 2):
             break
 
     combined_text = "\n".join(page.text for page in pages if page.text)
     if not combined_text:
         raise LeadInvestigationError(
-            "FieldOps reached the public website but could not extract usable public text."
+            "FieldOps reached public-source results but could not extract usable public text."
         )
     profile_key = _detect_entity_profile(
         target_name=target_name,
@@ -1220,8 +1230,8 @@ def investigate_public_lead(
     operating_entity = _extract_operating_entity(combined_text)
     entity_name = (
         operating_entity
-        or pages[0].site_name
-        or pages[0].title.split("|")[0].split("-")[0].strip()
+        or next((page.site_name for page in pages if page.site_name), "")
+        or next((page.title.split("|")[0].split("-")[0].strip() for page in pages if page.title.strip()), "")
         or target_name
     )
     nonprofit_signals = any(token in f"{target_name} {entity_name} {lead_context}".lower() for token in NONPROFIT_TOKENS) or any(
@@ -1235,6 +1245,7 @@ def investigate_public_lead(
             "supports": _supports_for_page(page),
         }
         for page in pages
+        if page.url
     ]
 
     contact_ladder = []
@@ -1272,7 +1283,7 @@ def investigate_public_lead(
         )
     contact_ladder.append(
         {
-            "label": "Website contact path",
+            "label": "Primary public source path",
             "value": base_url,
             "confidence": "High",
         }
@@ -1285,7 +1296,7 @@ def investigate_public_lead(
         recommendation = "Insufficient evidence"
 
     evidence_summary = (
-        f"Reviewed {len(pages)} public page(s) for {entity_name or target_name}. "
+        f"Reviewed {len(pages)} public source(s) for {entity_name or target_name}. "
         f"Found {len(candidates)} decision-maker candidate(s), "
         f"{len(emails)} public email(s), {len(phones)} public phone number(s), "
         f"and {len(department_routes)} likely routing department(s)."
@@ -1297,7 +1308,7 @@ def investigate_public_lead(
         "contractor_builder": "contractor_builder_match",
         "retail_multi_site": "retail_multi_site_match",
         "private_company": "private_company_match",
-    }.get(profile_key, "public_website_match")
+    }.get(profile_key, "public_source_match")
 
     return {
         "verified_entity": {
@@ -1323,6 +1334,6 @@ def investigate_public_lead(
         "contact_ladder": contact_ladder,
         "source_trail": source_trail,
         "recommendation": recommendation,
-        "reviewed_pages": [page.url for page in pages],
+        "reviewed_pages": [page.url for page in pages if page.url],
         "nonprofit_signals": nonprofit_signals,
     }
