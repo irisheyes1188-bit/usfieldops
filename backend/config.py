@@ -34,6 +34,8 @@ class FieldOpsConfig:
     allowed_origins: list[str]
     serve_frontend: bool
     reload: bool
+    auth_username: str
+    auth_password: str
     notion_token: str
     notion_daily_log_db_id: str
     notion_mission_ledger_db_id: str
@@ -55,6 +57,8 @@ def load_config() -> FieldOpsConfig:
         allowed_origins=_parse_allowed_origins(os.getenv("FIELDOPS_ALLOWED_ORIGINS")),
         serve_frontend=_parse_bool(os.getenv("FIELDOPS_SERVE_FRONTEND"), True),
         reload=_parse_bool(os.getenv("FIELDOPS_RELOAD"), False),
+        auth_username=os.getenv("FIELDOPS_AUTH_USERNAME", "").strip(),
+        auth_password=os.getenv("FIELDOPS_AUTH_PASSWORD", "").strip(),
         notion_token=os.getenv("FIELDOPS_NOTION_TOKEN", "").strip(),
         notion_daily_log_db_id=os.getenv(
             "FIELDOPS_NOTION_DAILY_LOG_DB_ID",

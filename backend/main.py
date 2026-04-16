@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import re
+import secrets
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +31,10 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 CONFIG = load_config()
 
 
+def _auth_enabled() -> bool:
+    return bool(CONFIG.auth_username and CONFIG.auth_password)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         pass
@@ -42,7 +49,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(body)
 
@@ -68,8 +75,42 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
+
+    def require_auth(self) -> bool:
+        if not _auth_enabled():
+            return True
+        auth_header = self.headers.get("Authorization", "").strip()
+        if not auth_header.startswith("Basic "):
+            self.send_auth_required()
+            return False
+        try:
+            decoded = base64.b64decode(auth_header.split(" ", 1)[1], validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            self.send_auth_required()
+            return False
+        username, separator, password = decoded.partition(":")
+        if (
+            not separator
+            or not secrets.compare_digest(username, CONFIG.auth_username)
+            or not secrets.compare_digest(password, CONFIG.auth_password)
+        ):
+            self.send_auth_required()
+            return False
+        return True
+
+    def send_auth_required(self) -> None:
+        body = json.dumps({"error": "Authentication required"}).encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("WWW-Authenticate", 'Basic realm="FieldOps"')
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -78,6 +119,8 @@ class Handler(BaseHTTPRequestHandler):
         self.log_request_line("GET", path)
         if path == "/api/health":
             self.send_json({"ok": True, "service": "fieldops-backend"})
+            return
+        if path.startswith("/api/") and not self.require_auth():
             return
         if path == "/api/state":
             self.send_json(load_state().model_dump(mode="json"))
@@ -118,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         self.log_request_line("POST", path)
+        if path.startswith("/api/") and path != "/api/health" and not self.require_auth():
+            return
         if path == "/api/state":
             state = AppState.model_validate(self.read_json())
             saved = save_state(state)

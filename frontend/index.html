@@ -179,6 +179,11 @@ textarea.inp.tall{min-height:130px;}
 .btn-orange{background:linear-gradient(135deg,#ea580c,#9a3412);color:white;}
 .btn-sm{padding:4px 10px;font-size:11px;}
 .btn-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px;}
+.auth-msg{font-family:var(--mono);font-size:10px;letter-spacing:1.2px;color:var(--mid);line-height:1.7;margin-bottom:12px;}
+.auth-error{display:none;font-family:var(--mono);font-size:10px;letter-spacing:1.1px;color:#fecaca;background:rgba(127,29,29,.28);border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:9px 11px;margin-bottom:12px;}
+.auth-error.open{display:block;}
+.auth-lock{font-family:var(--mono);font-size:8px;letter-spacing:1.6px;text-transform:uppercase;color:var(--mid);background:rgba(255,255,255,.04);border:1px solid rgba(180,220,255,.11);border-radius:7px;padding:5px 10px;cursor:pointer;white-space:nowrap;}
+.auth-lock:hover{background:rgba(255,255,255,.07);color:var(--hi);}
 .badge{display:inline-flex;align-items:center;font-family:var(--mono);font-size:9px;letter-spacing:1.2px;text-transform:uppercase;padding:2px 7px;border-radius:3px;border:1px solid;}
 .badge-gabby{color:var(--gabby);border-color:rgba(244,114,182,.3);background:rgba(244,114,182,.08);}
 .badge-chuck{color:var(--chuck);border-color:rgba(0,200,255,.3);background:rgba(0,200,255,.08);}
@@ -372,6 +377,7 @@ textarea.inp.tall{min-height:130px;}
     <div class="tb-right">
       <div class="tb-status" id="backendStatus"><span class="pip"></span><span id="backendStatusText">Starting</span></div>
       <div class="tb-log" id="backendLog">Local backend not checked yet</div>
+      <button class="auth-lock" id="authButton" onclick="handleAuthButton()">Sign In</button>
       <div class="snap-wrap">
         <div class="snap-btn" onclick="toggleSnap()">📅 Upcoming <span class="snap-chev up" id="snapChev">▲</span></div>
         <div class="snap-drop closed" id="snapDrop">
@@ -669,6 +675,18 @@ textarea.inp.tall{min-height:130px;}
   </div>
 </div>
 
+<!-- Auth Modal -->
+<div class="modal-overlay" id="authModal">
+  <div class="modal" style="width:420px">
+    <div class="modal-title">🔒 FieldOps Access</div>
+    <div class="auth-msg" id="authMessage">Enter your FieldOps username and password to unlock the deck.</div>
+    <div class="auth-error" id="authError"></div>
+    <div class="field"><label class="lbl">Username</label><input class="inp" id="authUsername" type="text" autocomplete="username" placeholder="FieldOps username"/></div>
+    <div class="field"><label class="lbl">Password</label><input class="inp" id="authPassword" type="password" autocomplete="current-password" placeholder="FieldOps password"/></div>
+    <div class="btn-row"><button class="btn btn-primary" onclick="submitAuthLogin()">Unlock Deck</button><button class="btn btn-ghost" onclick="clearAuthAndLock()">Sign Out</button></div>
+  </div>
+</div>
+
 <!-- End Day Confirm -->
 <div class="confirm-overlay" id="endDayConfirm">
   <div class="confirm-box">
@@ -712,6 +730,7 @@ var toastTimer = null;
 var editingId = null;
 var composerMissionMeta = {missionClass:'',actionType:'',sourceContext:'',parentMissionId:''};
 var appMeta = {version:'phase1'};
+var authSession = {username:'',token:''};
 var hdr = null;
 function trimTrailingSlash(v){return (v||'').replace(/\/+$/,'');}
 function normalizeApiBase(v){
@@ -813,6 +832,134 @@ function applyAppState(state){
     TEMPLATES = state.templates;
   }
   syncCalendarEventsFromMissions();
+}
+function clearVisibleState(){
+  applyAppState({
+    missions:[],
+    completedMissions:[],
+    myTasks:[],
+    activityItems:[],
+    archivedItems:[],
+    CALENDAR_EVENTS:[],
+    focus:{criticalId:null,focusTextOnly:null},
+    templates:TEMPLATES,
+    meta:{version:'phase1'}
+  });
+  renderAll();
+}
+var AUTH_STORAGE_KEY='fieldops_basic_auth';
+function loadStoredAuth(){
+  try{
+    var raw=localStorage.getItem(AUTH_STORAGE_KEY);
+    if(!raw)return;
+    var stored=JSON.parse(raw);
+    authSession={
+      username:(stored&&stored.username)||'',
+      token:(stored&&stored.token)||''
+    };
+  }catch(e){
+    authSession={username:'',token:''};
+  }
+}
+function persistAuth(username,password){
+  var cleanUser=(username||'').trim();
+  authSession={
+    username:cleanUser,
+    token:'Basic '+btoa(cleanUser+':'+(password||''))
+  };
+  try{localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify(authSession));}catch(e){}
+}
+function clearStoredAuth(){
+  authSession={username:'',token:''};
+  try{localStorage.removeItem(AUTH_STORAGE_KEY);}catch(e){}
+}
+function updateAuthButton(){
+  var btn=document.getElementById('authButton');
+  if(!btn)return;
+  btn.textContent=authSession&&authSession.token?('Unlocked: '+(authSession.username||'FieldOps')):'Sign In';
+}
+function setAuthError(msg){
+  var el=document.getElementById('authError');
+  if(!el)return;
+  el.textContent=msg||'';
+  el.classList.toggle('open',!!msg);
+}
+function openAuthModal(message){
+  var modal=document.getElementById('authModal');
+  var msg=document.getElementById('authMessage');
+  var user=document.getElementById('authUsername');
+  var pass=document.getElementById('authPassword');
+  if(msg)msg.textContent=message||'Enter your FieldOps username and password to unlock the deck.';
+  if(user)user.value=authSession&&authSession.username?authSession.username:'';
+  if(pass)pass.value='';
+  setAuthError('');
+  if(modal)modal.classList.add('open');
+  setTimeout(function(){
+    if(user&&user.value&&pass)pass.focus();
+    else if(user)user.focus();
+  },20);
+}
+function closeAuthModal(){
+  var modal=document.getElementById('authModal');
+  if(modal)modal.classList.remove('open');
+  setAuthError('');
+}
+function handleUnauthorized(detail){
+  clearStoredAuth();
+  updateAuthButton();
+  clearVisibleState();
+  setBackendStatus('offline','Locked',(detail||'Authentication required')+' via '+API_BASE);
+  openAuthModal('FieldOps is locked. Sign in to load live data.');
+}
+function buildAuthHeaders(headers){
+  var merged={};
+  Object.keys(headers||{}).forEach(function(key){merged[key]=headers[key];});
+  if(authSession&&authSession.token)merged.Authorization=authSession.token;
+  return merged;
+}
+function handleAuthButton(){
+  if(authSession&&authSession.token)openAuthModal('You are signed in. Enter credentials again to switch users or use Sign Out to lock the deck.');
+  else openAuthModal('Enter your FieldOps username and password to unlock the deck.');
+}
+function clearAuthAndLock(){
+  clearStoredAuth();
+  updateAuthButton();
+  clearVisibleState();
+  setBackendStatus('offline','Locked','Signed out of protected backend');
+  openAuthModal('FieldOps is locked. Sign in to unlock the deck.');
+}
+async function submitAuthLogin(){
+  var username=(document.getElementById('authUsername').value||'').trim();
+  var password=document.getElementById('authPassword').value||'';
+  if(!username||!password){
+    setAuthError('Enter both username and password.');
+    return;
+  }
+  persistAuth(username,password);
+  updateAuthButton();
+  setAuthError('');
+  setBackendStatus('busy','Unlocking','Verifying credentials via '+API_BASE+'/state');
+  try{
+    var state = await apiFetch('/state');
+    applyAppState(state||{});
+    await refreshLiveCalendarFeed();
+    closeAuthModal();
+    if(!calendarRefreshTimer)startCalendarRefreshLoop();
+    setBackendStatus('online',backendLabel(),'Authenticated as '+username+' via '+API_BASE);
+    renderAll();
+    showToast('FieldOps unlocked');
+  }catch(e){
+    clearStoredAuth();
+    updateAuthButton();
+    if(e&&e.status===401){
+      setAuthError('Incorrect username or password.');
+      setBackendStatus('offline','Locked','Authentication failed via '+API_BASE);
+      document.getElementById('authPassword').value='';
+      document.getElementById('authPassword').focus();
+      return;
+    }
+    setAuthError((e&&e.message)?e.message:'Unable to reach backend.');
+  }
 }
 function toAgendaDateValue(dt){
   var y=dt.getFullYear();
@@ -2345,6 +2492,89 @@ await loadStateFromBackend();
 startCalendarRefreshLoop();
 renderAll();
 showToast('FieldOps local state ready');
+}
+
+async function apiFetch(path,opts){
+  var req=Object.assign({},opts||{});
+  req.headers=buildAuthHeaders(req.headers||{});
+  var res = await fetch(API_BASE + path, req);
+  if(!res.ok){
+    var detail='';
+    try{
+      detail=(await res.text()||'').trim();
+      if(detail){
+        try{
+          var parsed=JSON.parse(detail);
+          if(parsed&&parsed.detail)detail=String(parsed.detail);
+        }catch(ignore){}
+      }
+    }catch(e){}
+    var err=new Error('HTTP ' + res.status + (detail?(' - ' + detail.substring(0,240)) : ''));
+    err.status=res.status;
+    err.detail=detail;
+    if(res.status===401)handleUnauthorized(detail);
+    throw err;
+  }
+  var bodyText='';
+  try{bodyText=await res.text();}catch(e){}
+  if(!bodyText)return {};
+  try{return JSON.parse(bodyText);}catch(e){return bodyText;}
+}
+async function saveStateNow(){
+  if(isHydrating)return;
+  if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}
+  try{
+    await apiFetch('/state',{
+      method:'POST',
+      keepalive:true,
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(collectAppState())
+    });
+  }catch(e){
+    if(e&&e.status===401)return;
+    setBackendStatus('offline','State Save Failed',((e&&e.message)?e.message:'Unknown error')+' via '+API_BASE);
+    showToast('State save failed');
+  }
+}
+async function loadStateFromBackend(){
+  isHydrating = true;
+  try{
+    var state = await apiFetch('/state');
+    applyAppState(state);
+    await refreshLiveCalendarFeed();
+    setBackendStatus('online',backendLabel(),'State loaded from '+API_BASE+'/state');
+    return true;
+  }catch(e){
+    if(e&&e.status===401)return false;
+    setBackendStatus('offline','Backend Offline','Could not load '+API_BASE+'/state');
+    showToast('Backend state load failed');
+    return false;
+  }finally{
+    isHydrating = false;
+  }
+}
+document.getElementById('authUsername').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();submitAuthLogin();}});
+document.getElementById('authPassword').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();submitAuthLogin();}});
+async function startApp(){
+hdr=document.getElementById('foHeader');
+loadStoredAuth();
+updateAuthButton();
+ensureActivityUi();
+buildStars();
+buildPrecip();
+setInterval(tick,1000);tick();
+fetchWx();setInterval(fetchWx,3600000);
+setBackendStatus('busy','Starting','Checking backend via '+API_BASE);
+
+// Blank start - no seed data
+// Load via Agent Input from Chuck or Gabby each session
+
+showSection('queue');
+await checkBackendHealth();
+var loaded=await loadStateFromBackend();
+if(loaded)startCalendarRefreshLoop();
+renderAll();
+if(loaded)showToast('FieldOps ready');
 }
 
 startApp();

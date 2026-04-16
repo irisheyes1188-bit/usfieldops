@@ -22,6 +22,10 @@ services:
         value: https://api.usfieldops.com/api
       - key: FIELDOPS_ALLOWED_ORIGINS
         value: https://usfieldops.com,https://www.usfieldops.com,https://fieldops-web.onrender.com
+      - key: FIELDOPS_AUTH_USERNAME
+        sync: false
+      - key: FIELDOPS_AUTH_PASSWORD
+        sync: false
       - key: FIELDOPS_SERVE_FRONTEND
         value: "false"
       - key: FIELDOPS_RELOAD
