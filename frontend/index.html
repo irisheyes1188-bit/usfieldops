@@ -248,6 +248,18 @@ textarea.inp.tall{min-height:130px;}
 .m-result details{margin-top:6px;}
 .m-result summary{font-family:var(--mono);font-size:9px;color:var(--lo);cursor:pointer;}
 .m-result-body{margin-top:6px;font-family:var(--mono);font-size:10px;line-height:1.6;color:var(--mid);white-space:pre-wrap;}
+.m-result-body.report{white-space:normal;font-family:var(--body);font-size:12px;line-height:1.7;color:var(--hi);}
+.report-shell{display:flex;flex-direction:column;gap:10px;}
+.report-intro{padding:9px 10px;border:1px solid rgba(0,200,255,.10);border-radius:6px;background:rgba(8,19,34,.55);}
+.report-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
+.report-kicker{font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent);}
+.report-summary{font-size:12px;line-height:1.6;color:var(--hi);}
+.report-section{padding:10px 11px;border:1px solid rgba(255,255,255,.06);border-radius:6px;background:rgba(255,255,255,.03);}
+.report-heading{font-family:var(--mono);font-size:9px;letter-spacing:1.8px;text-transform:uppercase;color:var(--gold);margin-bottom:6px;}
+.report-text{font-size:12px;line-height:1.7;color:var(--mid);white-space:pre-wrap;}
+.report-list{margin:0;padding-left:18px;color:var(--mid);}
+.report-list li{margin:0 0 6px 0;line-height:1.6;}
+.report-export{margin-top:8px;}
 .m-result-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin-top:8px;}
 .m-result-kv{padding:6px 8px;border-radius:4px;background:rgba(0,0,0,.2);border:1px solid rgba(180,220,255,.08);}
 .m-result-k{font-family:var(--mono);font-size:8px;letter-spacing:1.2px;text-transform:uppercase;color:var(--lo);}
@@ -1062,6 +1074,111 @@ function renderActionMetadataHtml(mission){
   if(!fields.length)return '';
   return '<div class="m-result-meta">'+fields.join('')+'</div>';
 }
+function isResearchSkillMission(mission){
+  var actionType=(mission&&mission.actionType)||(mission&&mission.mockResult&&mission.mockResult.action_type)||'';
+  return String(actionType||'').toLowerCase()==='research_skill';
+}
+function parseReportSections(text){
+  var raw=String(text||'').trim();
+  if(!raw)return [];
+  var lines=raw.split(/\r?\n/);
+  var sections=[];
+  var current=null;
+  function flush(){
+    if(current&&current.lines.length){
+      while(current.lines.length && !current.lines[current.lines.length-1].trim())current.lines.pop();
+      current.body=current.lines.join('\n').trim();
+      sections.push(current);
+    }
+  }
+  lines.forEach(function(line){
+    var trimmed=line.trim();
+    if(/^[A-Z][A-Z /-]+:\s*$/.test(trimmed)){
+      flush();
+      current={heading:trimmed.replace(/:\s*$/,''),lines:[]};
+      return;
+    }
+    if(!current){
+      current={heading:'OVERVIEW',lines:[]};
+    }
+    current.lines.push(line);
+  });
+  flush();
+  return sections;
+}
+function renderReportSectionBody(body){
+  var lines=String(body||'').split(/\r?\n/).filter(function(line){return line.trim();});
+  if(!lines.length)return '';
+  var bulletish=lines.filter(function(line){return /^\s*[-*]\s+/.test(line);});
+  if(bulletish.length && bulletish.length>=Math.max(2,Math.ceil(lines.length*0.45))){
+    return '<ul class="report-list">'+bulletish.map(function(line){
+      return '<li>'+esc(line.replace(/^\s*[-*]\s+/,''))+'</li>';
+    }).join('')+'</ul>';
+  }
+  return '<div class="report-text">'+esc(lines.join('\n'))+'</div>';
+}
+function renderMissionResultBodyHtml(mission){
+  var raw=(mission&&mission.mockResult&&mission.mockResult.full_output)||'';
+  if(!isResearchSkillMission(mission))return esc(raw||'');
+  var sections=parseReportSections(raw);
+  if(!sections.length)return esc(raw||'');
+  var summary=(mission&&mission.mockResult&&mission.mockResult.summary)||'';
+  var details=getMissionActionDetails(mission);
+  var metaParts=[];
+  if(details.confidence)metaParts.push('<span class="badge badge-high">'+esc(details.confidence+' confidence')+'</span>');
+  if(typeof details.source_count!=='undefined')metaParts.push('<span class="badge badge-live">'+esc(String(details.source_count)+' sources')+'</span>');
+  if(details.queries_run&&details.queries_run.length)metaParts.push('<span class="badge badge-carry">'+esc(String(details.queries_run.length)+' queries')+'</span>');
+  return '<div class="report-shell">'
+    +'<div class="report-intro">'
+    +'<div class="report-meta">'+metaParts.join('')+'</div>'
+    +'<div class="report-kicker">Research Brief</div>'
+    +'<div class="report-summary">'+esc(summary||'Structured research brief ready.')+'</div>'
+    +'</div>'
+    +sections.map(function(section){
+      return '<div class="report-section"><div class="report-heading">'+esc(section.heading)+'</div>'+renderReportSectionBody(section.body)+'</div>';
+    }).join('')
+    +'</div>';
+}
+function buildMissionExportHtml(mission){
+  var details=getMissionActionDetails(mission);
+  var sections=parseReportSections((mission&&mission.mockResult&&mission.mockResult.full_output)||'');
+  var title=esc((mission&&mission.title)||'FieldOps Report');
+  var summary=esc((mission&&mission.mockResult&&mission.mockResult.summary)||'');
+  var meta=[
+    details.confidence?'Confidence: '+esc(details.confidence):'',
+    typeof details.source_count!=='undefined'?'Sources: '+esc(String(details.source_count)):'',
+    (mission&&mission.lane)?'Lane: '+esc(String(mission.lane).toUpperCase()):''
+  ].filter(Boolean).join(' | ');
+  var bodyHtml=sections.map(function(section){
+    return '<h2>'+esc(section.heading)+'</h2>'+renderReportSectionBody(section.body).replace(/class="report-[^"]+"/g,'');
+  }).join('');
+  return '<html><head><meta charset="utf-8"><title>'+title+'</title><style>'
+    +'body{font-family:Calibri,Arial,sans-serif;color:#111;padding:36px;line-height:1.5;}'
+    +'h1{font-size:24px;margin:0 0 8px 0;}h2{font-size:14px;letter-spacing:.8px;margin:18px 0 6px 0;text-transform:uppercase;}'
+    +'p{margin:0 0 10px 0;}ul{margin:0 0 10px 20px;}li{margin:0 0 6px 0;}'
+    +'.meta{font-size:11px;color:#555;margin-bottom:16px;}.summary{font-size:12px;margin-bottom:16px;}'
+    +'</style></head><body><h1>'+title+'</h1>'
+    +(meta?'<div class="meta">'+meta+'</div>':'')
+    +(summary?'<div class="summary"><strong>Summary:</strong> '+summary+'</div>':'')
+    +bodyHtml
+    +'</body></html>';
+}
+function exportMissionReport(id){
+  var mission=missions.find(function(item){return item.id===id;})||completedMissions.find(function(item){return item.id===id;});
+  if(!mission||!mission.mockResult){showToast('No report available yet.');return;}
+  var html=buildMissionExportHtml(mission);
+  var blob=new Blob(['\ufeff',html],{type:'application/msword'});
+  var url=URL.createObjectURL(blob);
+  var link=document.createElement('a');
+  var safeTitle=(mission.title||'fieldops-report').replace(/[^\w\-]+/g,'_').replace(/_+/g,'_');
+  link.href=url;
+  link.download=safeTitle+'.doc';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);
+  showToast('Report exported');
+}
 function missionToCalendarEvent(mission){
   if(!mission||mission.actionType!=='calendar_create_event')return null;
   var details=getMissionActionDetails(mission);
@@ -1772,7 +1889,8 @@ function renderQueue(){
         +'</div>'
         +'<div class="m-result-summary">'+esc(m.mockResult.summary)+'</div>'
         +renderActionMetadataHtml(m)
-        +'<details><summary>Full Output</summary><div class="m-result-body">'+esc(m.mockResult.full_output||'')+'</div></details>'
+        +(isResearchSkillMission(m)?'<div class="report-export"><button class="btn btn-ghost btn-sm" onclick="exportMissionReport(\''+esc(m.id)+'\')">Export Report</button></div>':'')
+        +'<details><summary>'+(isResearchSkillMission(m)?'Research Brief':'Full Output')+'</summary><div class="m-result-body'+(isResearchSkillMission(m)?' report':'')+'">'+renderMissionResultBodyHtml(m)+'</div></details>'
         +'</div>';
       card.insertAdjacentHTML('beforeend', resultHtml);
     }
@@ -1786,6 +1904,7 @@ function renderQueue(){
     actions.appendChild(mkBtn('btn-ghost btn-sm','Dupe',(function(id){return function(){duplicateMission(id);};})(m.id)));
     var isPinned=criticalId===m.id;
     actions.appendChild(mkBtn('btn-sm '+(isPinned?'btn-danger':'btn-ghost'),isPinned?'Focus ON':'Pin Focus',(function(id){return function(){pinFocus(id);};})(m.id)));
+    if(m.mockResult&&isResearchSkillMission(m))actions.appendChild(mkBtn('btn-ghost btn-sm','Export Report',(function(id){return function(){exportMissionReport(id);};})(m.id)));
     if(m.prompt)actions.appendChild(mkBtn('btn-ghost btn-sm','Copy Prompt',(function(id){return function(){copyMissionPrompt(id);};})(m.id)));
     actions.appendChild(mkBtn('btn-danger btn-sm','X',(function(id){return function(){deleteMission(id);};})(m.id)));
     card.appendChild(actions);list.appendChild(card);
