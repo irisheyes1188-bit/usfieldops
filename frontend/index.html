@@ -1591,17 +1591,18 @@ function runUniversalParse(mode){
   var rawUpper=raw.toUpperCase();
   var hasMissionMarker=/FIELDOPS MISSION DISPATCH|MISSION DISPATCH/.test(rawUpper);
   var hasAgentLine=/^AGENT:/im.test(raw);
+  var hasTitleLine=/^TITLE:/im.test(raw);
   var hasObjective=/^OBJECTIVE:/im.test(raw);
   var hasMissionLine=/^MISSION:/im.test(raw);
-  if((hasMissionMarker||(hasAgentLine&&(hasObjective||hasMissionLine)))&&mode==='load'){
+  if((hasMissionMarker||((hasAgentLine||hasTitleLine)&&(hasObjective||hasMissionLine||hasTitleLine)))&&mode==='load'){
     var blocks=[raw];
     if(!hasMissionMarker){
-      blocks=raw.split(/\n-{4,}\n/).filter(function(b){return /Agent:/i.test(b)||/OBJECTIVE:/i.test(b);});
+      blocks=raw.split(/\n-{4,}\n/).filter(function(b){return /(?:Agent|Mission|Title|OBJECTIVE):/i.test(b);});
       if(!blocks.length)blocks=[raw];
     }
     blocks.forEach(function(block){
       var title='',agent='chuck',missionClass='',actionType='',sourceContext='',parentMissionId='',lane='',priority='normal',obj='',inp='',out='',carry=false;
-      var blockHasMission=false,blockHasAgent=false;
+      var blockHasMission=false,blockHasAgent=false,blockHasTitle=false;
       var objLines=[],inputLines=[],outLines=[],captureMode='';
       function isFieldHeaderLine(text){
         return /^(?:[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)*|[A-Z][A-Za-z]+(?: [a-z][A-Za-z]+)*)\s*:\s*/.test(text);
@@ -1609,6 +1610,7 @@ function runUniversalParse(mode){
       block.split('\n').forEach(function(l){
         var t=l.trim();
         if(/^Mission:/i.test(t)){title=t.replace(/^Mission:\s*/i,'').trim();blockHasMission=true;captureMode='';}
+        else if(/^Title:/i.test(t)){title=t.replace(/^Title:\s*/i,'').trim();blockHasTitle=true;captureMode='';}
         else if(/^Agent:/i.test(t)){var raw2=t.replace(/^Agent:\s*/i,'').toLowerCase().split(/[\s\/,\\|]+/)[0].trim().replace(/\/\/.*$/,'').trim();if(['gabby','chuck','maria','copilot','guy'].indexOf(raw2)>=0)agent=raw2;blockHasAgent=true;captureMode='';}
         else if(/^Mission Class:/i.test(t)){missionClass=t.replace(/^Mission Class:\s*/i,'').trim().toLowerCase();captureMode='';}
         else if(/^Action\s*Type\s*:/i.test(t)){actionType=t.replace(/^Action\s*Type\s*:\s*/i,'').trim();captureMode='';}
@@ -1628,7 +1630,7 @@ function runUniversalParse(mode){
       obj=objLines.join(' ').trim();inp=inputLines.join('\n').trim();out=outLines.join(' ').trim();
       var priMap={low:'low',normal:'normal',high:'high',critical:'critical'};priority=priMap[priority]||'normal';
       var actionablePayload=!!(obj||inp||out);
-      var headerSignal=!!(blockHasMission||blockHasAgent||/FIELDOPS MISSION DISPATCH|MISSION DISPATCH/i.test(block));
+      var headerSignal=!!(blockHasMission||blockHasAgent||blockHasTitle||/FIELDOPS MISSION DISPATCH|MISSION DISPATCH/i.test(block));
       var createdFromSubtasks=false;
       if(actionablePayload){
         var emailTaskMatch=obj.match(/(?:^|\s)Email Task:\s*([\s\S]+?)(?=(?:\s+Email Content Goals:|\s+Calendar Task:|$))/i);
@@ -1650,9 +1652,9 @@ function runUniversalParse(mode){
         loadedMissions++;
       }
     });
-  } else if((hasMissionMarker||(hasAgentLine&&(hasObjective||hasMissionLine)))&&mode==='composer'){
+  } else if((hasMissionMarker||((hasAgentLine||hasTitleLine)&&(hasObjective||hasMissionLine||hasTitleLine)))&&mode==='composer'){
     var agentM=raw.match(/^Agent:\s*(.+)/im);
-    var titleM=raw.match(/^Mission:\s*(.+)/im);
+    var titleM=raw.match(/^Mission:\s*(.+)/im)||raw.match(/^Title:\s*(.+)/im);
     var missionClassM=raw.match(/^Mission Class:\s*(.+)/im);
     var actionTypeM=raw.match(/^Action\s*Type\s*:\s*(.+)/im);
     var sourceContextM=raw.match(/^Source Context:\s*(.+)/im);
