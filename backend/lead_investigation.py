@@ -52,6 +52,10 @@ ROLE_KEYWORDS = (
     "rebate",
     "program",
     "office",
+    "franchise",
+    "operator",
+    "development",
+    "expansion",
 )
 TITLE_HINTS = (
     "owner",
@@ -85,6 +89,10 @@ TITLE_HINTS = (
     "compliance manager",
     "regional manager",
     "general manager",
+    "franchise manager",
+    "franchisee",
+    "operator",
+    "development manager",
 )
 DEPARTMENT_HINTS = (
     ("facilities", "Facilities"),
@@ -102,6 +110,7 @@ DEPARTMENT_HINTS = (
     ("administration", "Administration"),
     ("finance", "Finance"),
     ("office", "Administrative Office"),
+    ("development", "Development"),
 )
 NONPROFIT_TOKENS = ("ymca", "y m c a", "foundation", "nonprofit", "non-profit", "charity")
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
@@ -114,10 +123,11 @@ NAME_ROLE_RE = re.compile(
 ROLE_NAME_RE = re.compile(
     r"\b("
     r"(?:Chief Executive Officer|Chief Operating Officer|Chief Financial Officer|Executive Director|President(?:\s*&\s*CEO)?|"
-    r"Board Chair|Board President|Trustee|Director|Manager|Administrator|Facilities Manager|Operations Manager|Maintenance Manager)"
+    r"Board Chair|Board President|Trustee|Director|Manager|Administrator|Facilities Manager|Operations Manager|Maintenance Manager|Franchise Manager)"
     r")\s*(?:,|-|\u2013|\u2014|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})",
     re.I,
 )
+ENTITY_NAME_RE = re.compile(r"\b([A-Z][A-Za-z0-9&' .-]+?,\s+(?:LLC|Inc\.?|Corp\.?|Corporation|Ltd\.?))\b")
 SITE_NAME_RE = re.compile(
     r'(?is)<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']'
 )
@@ -130,6 +140,11 @@ QUERY_VARIANTS = (
     "facilities manager",
     "operations manager",
     "contact",
+    "grand opening",
+    "franchisee",
+    "operator",
+    "expansion",
+    "llc",
 )
 NOISY_NAME_PREFIXES = {"us", "our", "meet", "team", "staff", "board", "leadership", "contact"}
 PUBLIC_INSTITUTION_TOKENS = (
@@ -178,6 +193,23 @@ RETAIL_TOKENS = (
     "outlet",
     "fitness center",
     "fitness club",
+    "oil change",
+    "franchise",
+)
+LOCAL_PRESS_HINTS = (
+    "dailyinterlake",
+    "nbcmontana",
+    "kpax",
+    "ktvq",
+    "krtv",
+    "montanarightnow",
+    "billingsgazette",
+    "missoulian",
+    "helenair",
+    "tribune",
+    "chronicle",
+    "news",
+    "interlake",
 )
 ENTITY_PROFILES = {
     "nonprofit": {
@@ -256,12 +288,16 @@ ENTITY_PROFILES = {
             "construction manager",
             "real estate",
             "operations manager",
+            "franchise manager",
+            "franchisee",
+            "grand opening",
+            "expansion",
             "contact",
         ),
         "link_hints": ("locations", "about", "leadership", "real-estate", "contact", "team"),
-        "role_boost_terms": ("facilities manager", "regional manager", "construction manager", "real estate", "operations manager"),
-        "department_boost_terms": ("facilities", "operations", "capital projects"),
-        "strategy_summary": "Favor facilities, regional operations, store development, and real-estate/construction routes.",
+        "role_boost_terms": ("facilities manager", "regional manager", "construction manager", "real estate", "operations manager", "franchise manager", "franchisee", "operator"),
+        "department_boost_terms": ("facilities", "operations", "capital projects", "development"),
+        "strategy_summary": "Favor franchise operators, regional operations, store development, and real-estate/construction routes over brand-level leadership.",
     },
     "private_company": {
         "label": "Private company / LLC / corporation",
@@ -563,6 +599,15 @@ def _build_search_queries(
                 queries.append(f"site:{host} {target_name} {variant}")
     if lead_context and "rebate" in lead_context.lower():
         queries.append(f"{base} facilities manager rebate")
+    queries.extend(
+        [
+            f"{base} grand opening",
+            f"{base} franchisee",
+            f"{base} llc",
+            f"{base} operator",
+            f"{base} expansion",
+        ]
+    )
     if profile_key == "nonprofit":
         queries.extend(
             [
@@ -593,6 +638,7 @@ def _build_search_queries(
                 f"{base} regional manager",
                 f"{base} store development",
                 f"{base} facilities manager",
+                f"{base} franchise manager",
             ]
         )
     deduped: list[str] = []
@@ -606,7 +652,7 @@ def _build_search_queries(
             continue
         seen.add(key)
         deduped.append(normalized)
-    return deduped[:6]
+    return deduped[:8]
 
 
 def _classify_public_source(url: str) -> str:
@@ -621,6 +667,8 @@ def _classify_public_source(url: str) -> str:
         return "public_profile"
     if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com")):
         return "public_social"
+    if any(token in host for token in LOCAL_PRESS_HINTS):
+        return "local_press"
     return "company_website"
 
 
@@ -745,6 +793,11 @@ def _location_tokens(address: str, city_state: str) -> set[str]:
     }
 
 
+def _extract_operating_entity(text: str) -> str:
+    match = ENTITY_NAME_RE.search(text or "")
+    return match.group(1).strip() if match else ""
+
+
 def _score_search_result_for_homepage(
     result: SearchResult,
     target_name: str,
@@ -761,6 +814,8 @@ def _score_search_result_for_homepage(
         score += 5
     elif result.source_type in {"business_registry", "official_registry"}:
         score += 2
+    elif result.source_type == "local_press":
+        score += 1
     else:
         score -= 2
 
@@ -822,8 +877,9 @@ def _discover_public_homepage(
         reverse=True,
     )
 
-    best = ranked[0]
-    if _score_search_result_for_homepage(best, target_name, address, city_state) < 3:
+    company_candidates = [item for item in ranked if item.source_type == "company_website"]
+    best = company_candidates[0] if company_candidates else ranked[0]
+    if company_candidates and _score_search_result_for_homepage(best, target_name, address, city_state) < 3:
         raise LeadInvestigationError(
             "FieldOps found public references but could not confidently identify the official website."
         )
@@ -989,6 +1045,8 @@ def _supports_for_page(page: FetchedPage) -> str:
         return "Public business registration signal"
     if page.source_type == "official_registry":
         return "Official public registry signal"
+    if page.source_type == "local_press":
+        return "Local press or expansion coverage"
     if "services" in lowered:
         return "Public services or trade-scope information"
     if "projects" in lowered:
@@ -1014,7 +1072,7 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 3
     else:
         score += 1
-    if source_type in {"company_website", "official_registry", "nonprofit_record"}:
+    if source_type in {"company_website", "official_registry", "nonprofit_record", "local_press"}:
         score += 2
     desired_tokens = {
         token.lower()
@@ -1023,7 +1081,7 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
     }
     if desired_tokens and any(token in role for token in desired_tokens):
         score += 4
-    if any(token in role for token in ("facilities", "operations", "maintenance", "engineering", "director", "manager")):
+    if any(token in role for token in ("facilities", "operations", "maintenance", "engineering", "director", "manager", "franchise", "operator", "development")):
         score += 2
     if any(token in role for token in ("board chair", "board president", "executive director", "ceo")):
         score += 1
@@ -1159,8 +1217,10 @@ def investigate_public_lead(
     candidates = _dedupe_role_candidates(all_candidates)
     department_routes = _dedupe_department_routes(all_department_routes)
 
+    operating_entity = _extract_operating_entity(combined_text)
     entity_name = (
-        pages[0].site_name
+        operating_entity
+        or pages[0].site_name
         or pages[0].title.split("|")[0].split("-")[0].strip()
         or target_name
     )
