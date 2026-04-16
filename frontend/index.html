@@ -711,6 +711,7 @@ var tFilter = 'all';
 var toastTimer = null;
 var editingId = null;
 var composerMissionMeta = {missionClass:'',actionType:'',sourceContext:'',parentMissionId:''};
+var appMeta = {version:'phase1'};
 var hdr = null;
 function trimTrailingSlash(v){return (v||'').replace(/\/+$/,'');}
 function normalizeApiBase(v){
@@ -795,7 +796,7 @@ function collectAppState(){
     CALENDAR_EVENTS: cloneJson(CALENDAR_EVENTS),
     focus: {criticalId: criticalId, focusTextOnly: focusTextOnly},
     templates: cloneJson(TEMPLATES),
-    meta: {version: 'phase1'}
+    meta: cloneJson(appMeta||{version:'phase1'})
   };
 }
 function applyAppState(state){
@@ -807,6 +808,7 @@ function applyAppState(state){
   CALENDAR_EVENTS = Array.isArray(state.CALENDAR_EVENTS) ? state.CALENDAR_EVENTS : [];
   criticalId = state.focus && typeof state.focus.criticalId !== 'undefined' ? state.focus.criticalId : null;
   focusTextOnly = state.focus && typeof state.focus.focusTextOnly !== 'undefined' ? state.focus.focusTextOnly : null;
+  appMeta = state && state.meta && typeof state.meta === 'object' ? state.meta : {version:'phase1'};
   if(state.templates && typeof state.templates === 'object' && Object.keys(state.templates).length){
     TEMPLATES = state.templates;
   }
@@ -2243,6 +2245,56 @@ function executeEndDay(){
 }
 
 // ══ ARCHIVE ═══════════════════════════════════════════════
+function applyEndDayArchive(syncResult){
+  var today=new Date();
+  var dateStr=today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  var archivedCount=0;
+  var completedMissionCount=completedMissions.length;
+  myTasks.filter(function(t){return t.status==='done';}).forEach(function(t){
+    archivedItems.push({id:'ARC-'+Date.now()+'-'+archivedCount,type:'task',title:t.title,lane:t.lane||'',priority:t.priority||'normal',archivedDate:today.toISOString(),archivedDateLabel:dateStr,carry:t.carry||false,due:t.due||''});archivedCount++;
+  });
+  completedMissions.forEach(function(m){
+    archivedItems.push({id:'ARC-'+Date.now()+'-'+archivedCount,type:'mission',title:m.title,lane:m.lane||'',priority:m.priority||'normal',agent:m.agent||'',archivedDate:today.toISOString(),archivedDateLabel:dateStr,resultSummary:m.resultSummary||'',followUp:m.followUp||false,completedAt:m.completedAt||''});archivedCount++;
+  });
+  myTasks.filter(function(t){return t.status!=='done';}).forEach(function(t){t.carry=true;t.carriedFrom=dateStr;});
+  myTasks=myTasks.filter(function(t){return t.status!=='done';});
+  completedMissions=[];
+  missions.filter(function(m){return m.status!=='complete';}).forEach(function(m){m.carry=true;});
+  appMeta=appMeta&&typeof appMeta==='object'?appMeta:{version:'phase1'};
+  appMeta.lastEndDaySync={
+    timestamp:new Date().toISOString(),
+    date:(syncResult&&syncResult.date)||toAgendaDateValue(today),
+    daily_log_page_id:(syncResult&&syncResult.daily_log_page_id)||'',
+    mission_pages_created:(syncResult&&typeof syncResult.mission_pages_created!=='undefined')?syncResult.mission_pages_created:0,
+    mission_pages_updated:(syncResult&&typeof syncResult.mission_pages_updated!=='undefined')?syncResult.mission_pages_updated:0,
+    completed_missions_considered:(syncResult&&typeof syncResult.completed_missions_considered!=='undefined')?syncResult.completed_missions_considered:completedMissionCount,
+    message:(syncResult&&syncResult.message)||'Notion sync completed successfully.'
+  };
+  closeEndDay();updateCounts();renderQueue();renderTasks();renderDebrief();renderArchive();
+  scheduleStateSave();
+  setBackendStatus('online','End Day Synced','Notion closeout confirmed for '+dateStr);
+  showToast('End Day synced + archived — '+archivedCount+' item'+(archivedCount!==1?'s':'')+' stored');
+}
+async function syncEndOfDayToNotion(){
+  return apiFetch('/notion/end-of-day/sync',{method:'POST'});
+}
+async function executeEndDay(){
+  var completedTaskCount=myTasks.filter(function(t){return t.status==='done';}).length;
+  var completedMissionCount=completedMissions.length;
+  var totalCompleted=completedTaskCount+completedMissionCount;
+  if(!totalCompleted){
+    showToast('Nothing completed to close out yet');
+    return;
+  }
+  setBackendStatus('busy','Closing Day','Syncing Notion closeout via '+API_BASE+'/notion/end-of-day/sync');
+  try{
+    var syncResult = await syncEndOfDayToNotion();
+    applyEndDayArchive(syncResult||{});
+  }catch(e){
+    setBackendStatus('offline','End Day Sync Failed',((e&&e.message)?e.message:'Unknown error')+' via '+API_BASE);
+    showToast('End Day blocked — Notion sync failed');
+  }
+}
 function clearArchive(){if(!archivedItems.length){showToast('Archive already empty.');return;}archivedItems=[];updateCounts();renderArchive();scheduleStateSave();showToast('Archive cleared.');}
 function renderArchive(){
   var list=document.getElementById('archiveList');if(!list)return;
