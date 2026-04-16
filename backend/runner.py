@@ -372,6 +372,20 @@ def _extract_calendar_fields(mission: Mission) -> dict:
     }
 
 
+def _clean_lead_title(value: str) -> str:
+    cleaned = (value or "").strip()
+    patterns = (
+        r"(?i)^identify\s+decision\s+maker\s+for\s+",
+        r"(?i)^find\s+decision\s+maker\s+for\s+",
+        r"(?i)^identify\s+the\s+decision\s+maker\s+for\s+",
+        r"(?i)^investigate\s+",
+        r"(?i)^lead\s+investigation\s*[-:]*\s*",
+    )
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned).strip()
+    return cleaned
+
+
 def _extract_lead_investigation_fields(mission: Mission) -> dict:
     text = "\n".join(
         [
@@ -383,15 +397,47 @@ def _extract_lead_investigation_fields(mission: Mission) -> dict:
         ]
     )
     inputs_text = mission.inputs or text
-    target_name = _extract_field(inputs_text, "Target Name") or mission.title or ""
-    address = _extract_field(inputs_text, "Address")
-    city_state = _extract_field(inputs_text, "City / State")
-    website = _extract_field(inputs_text, "Website")
+
+    title_fallback = _clean_lead_title(mission.title or "")
+    target_name = (
+        _extract_field(inputs_text, "Target Name")
+        or _extract_field(inputs_text, "Business Name")
+        or _extract_field(inputs_text, "Target Business")
+        or title_fallback
+        or mission.title
+        or ""
+    )
+
+    street_area = (
+        _extract_field(inputs_text, "Street / Area")
+        or _extract_field(inputs_text, "Street/Area")
+        or _extract_field(inputs_text, "Area")
+    )
+    address = _extract_field(inputs_text, "Address") or street_area
+
+    city_state = (
+        _extract_field(inputs_text, "City / State")
+        or _extract_field(inputs_text, "City/State")
+        or _extract_field(inputs_text, "City State")
+    )
+    if not city_state:
+        city = _extract_field(inputs_text, "City")
+        state = _extract_field(inputs_text, "State")
+        city_state = ", ".join(part for part in [city.strip(), state.strip()] if part.strip())
+
+    website = (
+        _extract_field(inputs_text, "Website")
+        or _extract_field(inputs_text, "Company Website")
+        or _extract_field(inputs_text, "Public Website")
+    )
     known_person = _extract_field(inputs_text, "Known Person")
     known_phone = _extract_field(inputs_text, "Known Phone")
     known_email = _extract_field(inputs_text, "Known Email")
     lead_context = _extract_field(inputs_text, "Lead Context")
-    desired_contact_type = _extract_field(inputs_text, "Desired Contact Type")
+    desired_contact_type = (
+        _extract_field(inputs_text, "Desired Contact Type")
+        or _extract_field(inputs_text, "Investigation Goal")
+    )
     reason = lead_context or mission.objective or ""
 
     return {
@@ -535,8 +581,14 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
         return {
             "status": "action_required",
             "timestamp": datetime.now().isoformat(),
-            "summary": "Lead investigation needs more public-source input",
-            "full_output": str(exc),
+            "summary": "Lead investigation incomplete",
+            "full_output": (
+                "FieldOps could not complete the lead investigation from the current public inputs.\n\n"
+                f"Reason: {str(exc)}\n\n"
+                "Suggested next step:\n"
+                "- Add exact address, phone, or website if available, then rerun.\n"
+                "- If no website is known, use business-name-first discovery."
+            ),
             "follow_up_needed": True,
             "carry_forward": bool(mission.carry),
             "action_required": True,
