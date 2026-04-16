@@ -857,7 +857,8 @@ def _discover_public_homepage(
     city_state: str,
     lead_context: str,
     profile_key: str,
-) -> tuple[str, list[SearchResult]]:
+) -> tuple[str, list[SearchResult], list[str]]:
+    queries_run = _build_search_queries(target_name, city_state, "", lead_context, profile_key)
     search_results = _fetch_public_search_results(
         target_name=target_name,
         city_state=city_state,
@@ -878,7 +879,7 @@ def _discover_public_homepage(
     )
 
     best = ranked[0]
-    return _normalize_url(best.url), ranked
+    return _normalize_url(best.url), ranked, queries_run
 
 
 def _extract_role_candidates_from_text(
@@ -912,6 +913,9 @@ def _extract_role_candidates_from_text(
             seen.add(key)
             confidence = "Medium"
             reason = "Named on a public page with a role/title."
+            if source_type == "local_press":
+                confidence = "High"
+                reason = "Named in local public coverage tied to the target business or rollout."
             if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
                 confidence = "High"
                 reason = "Named on a public page with a role matching the requested contact type."
@@ -938,6 +942,9 @@ def _extract_role_candidates_from_text(
             seen.add(key)
             confidence = "Medium"
             reason = "Named on a public page with a public leadership title."
+            if source_type == "local_press":
+                confidence = "High"
+                reason = "Named in local public coverage with an operational title."
             if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
                 confidence = "High"
                 reason = "Named on a public page with a title aligned to the requested contact type."
@@ -1089,6 +1096,8 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         token in role for token in ("owner", "president", "principal")
     ):
         score += 3
+    if source_type == "local_press" and any(token in role for token in ("franchise", "operator", "owner", "manager", "developer")):
+        score += 4
     return score
 
 
@@ -1136,6 +1145,7 @@ def investigate_public_lead(
         )
 
     discovered_search_results: list[SearchResult] = []
+    query_trace: list[str] = []
 
     initial_profile_key = _detect_entity_profile(
         target_name=target_name,
@@ -1145,8 +1155,9 @@ def investigate_public_lead(
 
     if website.strip():
         base_url = _normalize_url(website)
+        query_trace = _build_search_queries(target_name, city_state, website, lead_context, initial_profile_key)
     else:
-        base_url, discovered_search_results = _discover_public_homepage(
+        base_url, discovered_search_results, query_trace = _discover_public_homepage(
             target_name=target_name,
             address=address,
             city_state=city_state,
@@ -1192,6 +1203,30 @@ def investigate_public_lead(
         raise LeadInvestigationError(
             "FieldOps reached public-source results but could not extract usable public text."
         )
+
+    operating_entity = _extract_operating_entity(combined_text)
+    if operating_entity and operating_entity.lower() not in target_name.lower():
+        entity_queries = _build_search_queries(operating_entity, city_state, "", lead_context, initial_profile_key)
+        for query in entity_queries:
+            if query not in query_trace:
+                query_trace.append(query)
+        entity_results = _fetch_public_search_results(
+            target_name=operating_entity,
+            city_state=city_state,
+            website="",
+            lead_context=lead_context,
+            profile_key=initial_profile_key,
+        )
+        existing_urls = {page.url for page in pages}
+        for result in entity_results:
+            if result.url in existing_urls:
+                continue
+            pages.append(_search_result_to_page(result))
+            existing_urls.add(result.url)
+            if len(pages) >= (MAX_WEBSITE_PAGES + (MAX_SEARCH_RESULTS * 2) + 2):
+                break
+        combined_text = "\n".join(page.text for page in pages if page.text)
+
     profile_key = _detect_entity_profile(
         target_name=target_name,
         website=base_url,
@@ -1227,7 +1262,6 @@ def investigate_public_lead(
     candidates = _dedupe_role_candidates(all_candidates)
     department_routes = _dedupe_department_routes(all_department_routes)
 
-    operating_entity = _extract_operating_entity(combined_text)
     entity_name = (
         operating_entity
         or next((page.site_name for page in pages if page.site_name), "")
@@ -1336,4 +1370,15 @@ def investigate_public_lead(
         "recommendation": recommendation,
         "reviewed_pages": [page.url for page in pages if page.url],
         "nonprofit_signals": nonprofit_signals,
+        "query_trace": query_trace,
+        "search_result_trace": [
+            {
+                "url": result.url,
+                "title": result.title,
+                "snippet": result.snippet,
+                "source_type": result.source_type,
+            }
+            for result in search_results[:MAX_SEARCH_RESULTS]
+        ],
+        "operating_entity": operating_entity,
     }
