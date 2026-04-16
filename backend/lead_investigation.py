@@ -728,6 +728,109 @@ def _normalize_role_text(role: str) -> str:
     return role_clean.strip(" -\u2013\u2014")
 
 
+def _target_tokens(target_name: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.split(r"[^a-zA-Z0-9]+", target_name or "")
+        if len(token.strip()) >= 2
+    }
+
+
+def _location_tokens(address: str, city_state: str) -> set[str]:
+    raw = " ".join(part for part in [address, city_state] if part)
+    return {
+        token.lower()
+        for token in re.split(r"[^a-zA-Z0-9]+", raw)
+        if len(token.strip()) >= 2
+    }
+
+
+def _score_search_result_for_homepage(
+    result: SearchResult,
+    target_name: str,
+    address: str,
+    city_state: str,
+) -> int:
+    url = result.url.lower()
+    title = (result.title or "").lower()
+    snippet = (result.snippet or "").lower()
+
+    score = 0
+
+    if result.source_type == "company_website":
+        score += 5
+    elif result.source_type in {"business_registry", "official_registry"}:
+        score += 2
+    else:
+        score -= 2
+
+    bad_hosts = (
+        "facebook.com",
+        "instagram.com",
+        "x.com",
+        "twitter.com",
+        "linkedin.com",
+        "zoominfo.com",
+        "rocketreach.co",
+        "bizapedia.com",
+        "opencorporates.com",
+        "duckduckgo.com",
+        "yelp.com",
+        "mapquest.com",
+    )
+    if any(host in url for host in bad_hosts):
+        score -= 6
+
+    if any(path_hint in url for path_hint in ("/locations/", "/location/", "/stores/", "/store/", "/about", "/contact")):
+        score += 3
+
+    tokens = _target_tokens(target_name)
+    haystack = f"{title} {snippet} {url}"
+    token_hits = sum(1 for token in tokens if token in haystack)
+    score += token_hits * 2
+
+    loc_tokens = _location_tokens(address, city_state)
+    loc_hits = sum(1 for token in loc_tokens if token in haystack)
+    score += min(loc_hits, 3)
+
+    return score
+
+
+def _discover_public_homepage(
+    target_name: str,
+    address: str,
+    city_state: str,
+    lead_context: str,
+    profile_key: str,
+) -> tuple[str, list[SearchResult]]:
+    search_results = _fetch_public_search_results(
+        target_name=target_name,
+        city_state=city_state,
+        website="",
+        lead_context=lead_context,
+        profile_key=profile_key,
+    )
+
+    if not search_results:
+        raise LeadInvestigationError(
+            "FieldOps could not discover a usable public website from business-name-first search."
+        )
+
+    ranked = sorted(
+        search_results,
+        key=lambda item: _score_search_result_for_homepage(item, target_name, address, city_state),
+        reverse=True,
+    )
+
+    best = ranked[0]
+    if _score_search_result_for_homepage(best, target_name, address, city_state) < 3:
+        raise LeadInvestigationError(
+            "FieldOps found public references but could not confidently identify the official website."
+        )
+
+    return _normalize_url(best.url), ranked
+
+
 def _extract_role_candidates_from_text(
     text: str,
     desired_contact_type: str,
@@ -971,18 +1074,30 @@ def investigate_public_lead(
     desired_contact_type: str = "",
     lead_context: str = "",
 ) -> dict:
-    if not website:
+    if not target_name.strip():
         raise LeadInvestigationError(
-            "Live public-source investigation currently requires a Website field. "
-            "Provide the company/public website and rerun the mission."
+            "Lead investigation requires a target name or business name."
         )
 
-    base_url = _normalize_url(website)
+    discovered_search_results: list[SearchResult] = []
+
     initial_profile_key = _detect_entity_profile(
         target_name=target_name,
-        website=base_url,
+        website=website or "",
         lead_context=lead_context,
     )
+
+    if website.strip():
+        base_url = _normalize_url(website)
+    else:
+        base_url, discovered_search_results = _discover_public_homepage(
+            target_name=target_name,
+            address=address,
+            city_state=city_state,
+            lead_context=lead_context,
+            profile_key=initial_profile_key,
+        )
+
     home_html = _fetch_url(base_url)
     pages: list[FetchedPage] = [_parse_page(base_url, home_html)]
     for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key):
@@ -992,7 +1107,7 @@ def investigate_public_lead(
             continue
         pages.append(_parse_page(link, html))
 
-    search_results = _fetch_public_search_results(
+    search_results = discovered_search_results or _fetch_public_search_results(
         target_name=target_name,
         city_state=city_state,
         website=base_url,
