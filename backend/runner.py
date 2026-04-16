@@ -13,7 +13,35 @@ from gmail_oauth import (
     create_gmail_draft,
 )
 from lead_investigation import LeadInvestigationError, investigate_public_lead
+from research_skill import ResearchSkillError, run_research_skill
 from models import Mission
+
+
+def _is_research_skill(mission: Mission, text: str) -> bool:
+    if (mission.actionType or "").strip().lower() == "research_skill":
+        return True
+    lowered = text.lower()
+    trigger_phrases = (
+        "research briefing",
+        "research brief",
+        "research the",
+        "research whether",
+        "investigate whether",
+        "investigate the feasibility",
+        "look into whether",
+        "public evidence",
+        "what do we know about",
+        "find out whether",
+        "feasibility of",
+    )
+    if any(phrase in lowered for phrase in trigger_phrases):
+        return True
+    if "research" in lowered and re.search(
+        r"\b(build|create|gather|summarize|evaluate|assess|prepare|whether|feasibility|viability)\b",
+        lowered,
+    ):
+        return True
+    return False
 
 
 def classify_mission(mission: Mission) -> dict:
@@ -22,6 +50,7 @@ def classify_mission(mission: Mission) -> dict:
             "gmail_create_draft",
             "calendar_create_event",
             "lead_investigation",
+            "research_skill",
             "generate_word_report",
             "email_deliverable",
             "log_deliverable",
@@ -94,6 +123,8 @@ def classify_mission(mission: Mission) -> dict:
         )
     ):
         return {"execution_type": "action", "action_type": "lead_investigation"}
+    if _is_research_skill(mission, text):
+        return {"execution_type": "action", "action_type": "research_skill"}
     if (
         ("comparison table" in text or "comparison report" in text or "word-format comparison report" in text)
         and re.search(r"\b(create|generate|build|compare)\b", text)
@@ -533,6 +564,142 @@ def _build_lead_investigation_result(mission: Mission) -> dict:
         }
 
 
+def _extract_research_skill_fields(mission: Mission) -> dict:
+    text = "\n".join(
+        [
+            mission.title or "",
+            mission.objective or "",
+            mission.inputs or "",
+            mission.expectedOutput or "",
+            mission.prompt or "",
+        ]
+    )
+    inputs_text = mission.inputs or text
+    scope = _extract_field(inputs_text, "Scope")
+    max_sources_raw = _extract_field(inputs_text, "Max Sources") or _extract_line_field(inputs_text, "Max Sources")
+    try:
+        max_sources = int(max_sources_raw) if max_sources_raw else 6
+    except ValueError:
+        max_sources = 6
+    max_sources = max(2, min(max_sources, 10))
+
+    return {
+        "title": (mission.title or "").strip(),
+        "objective": (mission.objective or mission.inputs or mission.prompt or "").strip(),
+        "lane": (mission.lane or "General Ops").strip() or "General Ops",
+        "scope": (scope or "").strip(),
+        "max_sources": max_sources,
+    }
+
+
+def _build_research_skill_result(mission: Mission) -> dict:
+    fields = _extract_research_skill_fields(mission)
+    if not fields["title"] and not fields["objective"]:
+        return {
+            "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Research skill missing topic",
+            "full_output": (
+                "Action Type: research_skill\n\n"
+                "FieldOps could not start the research skill because the mission did not include "
+                "a usable title or objective."
+            ),
+            "follow_up_needed": True,
+            "carry_forward": bool(mission.carry),
+            "action_required": True,
+            "action_type": "research_skill",
+            "action_status": "missing_topic",
+            "action_completed": False,
+        }
+
+    try:
+        research = run_research_skill(
+            title=fields["title"],
+            objective=fields["objective"],
+            lane=fields["lane"],
+            scope=fields["scope"],
+            max_sources=fields["max_sources"],
+        )
+        source_lines = (
+            "\n".join(
+                f"- {item['domain']} [{item['relevance_score']}] {item['url']}"
+                for item in research["sources"][:6]
+            )
+            or "- No usable public sources recorded."
+        )
+        finding_lines = (
+            "\n".join(f"- {item}" for item in research["findings"][:8])
+            or "- No distinct findings extracted."
+        )
+        return {
+            "status": "complete",
+            "timestamp": datetime.now().isoformat(),
+            "summary": research["summary"],
+            "full_output": (
+                f"{research['brief']}\n\n"
+                "QUERY TRACE:\n"
+                + "\n".join(f"- {query}" for query in research["queries_run"])
+                + "\n\nTOP SOURCES:\n"
+                + source_lines
+                + "\n\nRANKED FINDINGS:\n"
+                + finding_lines
+            ),
+            "follow_up_needed": research["confidence"] != "HIGH",
+            "carry_forward": bool(mission.carry),
+            "action_required": False,
+            "action_type": "research_skill",
+            "action_status": "completed",
+            "action_completed": True,
+            "action_details": {
+                "confidence": research["confidence"],
+                "source_count": research["source_count"],
+                "queries_run": research["queries_run"],
+                "sources": [
+                    {
+                        "url": item["url"],
+                        "domain": item["domain"],
+                        "relevance_score": item["relevance_score"],
+                    }
+                    for item in research["sources"][:6]
+                ],
+                "findings": research["findings"][:8],
+            },
+        }
+    except ResearchSkillError as exc:
+        needs_action = exc.error_type == "dependency_error"
+        return {
+            "status": "action_required" if needs_action else "failed",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Research skill failed",
+            "full_output": str(exc),
+            "follow_up_needed": True,
+            "carry_forward": True,
+            "action_required": needs_action,
+            "action_type": "research_skill",
+            "action_status": "failed",
+            "action_completed": False,
+            "action_details": {
+                "error_type": exc.error_type,
+                "message": str(exc),
+                "title": fields["title"],
+                "scope": fields["scope"],
+            },
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "timestamp": datetime.now().isoformat(),
+            "summary": "Research skill failed",
+            "full_output": str(exc),
+            "follow_up_needed": True,
+            "carry_forward": True,
+            "action_required": True,
+            "action_type": "research_skill",
+            "action_status": "failed",
+            "action_completed": False,
+        }
+
+
 def build_mock_result(mission: Mission) -> dict:
     lane = mission.lane.upper() if mission.lane else "GENERAL"
     title = mission.title or "Untitled Mission"
@@ -704,6 +871,8 @@ def build_action_result(mission: Mission, action_type: str) -> dict:
             }
     if action_type == "lead_investigation":
         return _build_lead_investigation_result(mission)
+    if action_type == "research_skill":
+        return _build_research_skill_result(mission)
     if action_type in {
         "generate_word_report",
         "email_deliverable",
