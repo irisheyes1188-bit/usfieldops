@@ -211,6 +211,25 @@ LOCAL_PRESS_HINTS = (
     "news",
     "interlake",
 )
+GENERIC_LOCATION_PATH_HINTS = (
+    "/locations/",
+    "/location/",
+    "/stores/",
+    "/store/",
+)
+OPERATOR_SIGNAL_TERMS = (
+    "llc",
+    "franchisee",
+    "franchise manager",
+    "operator",
+    "grand opening",
+    "expansion",
+    "owner",
+    "opened",
+    "opening",
+    "rollout",
+    "developer",
+)
 ENTITY_PROFILES = {
     "nonprofit": {
         "label": "Nonprofit / community organization",
@@ -693,15 +712,27 @@ def _fetch_public_search_results(
                 continue
             seen_urls.add(result.url)
             results.append(result)
-            if len(results) >= MAX_SEARCH_RESULTS:
-                return results
-    return results
+    ranked = sorted(
+        results,
+        key=lambda item: _score_search_result_for_investigation(
+            item,
+            target_name=target_name,
+            city_state=city_state,
+            lead_context=lead_context,
+            profile_key=profile_key,
+        ),
+        reverse=True,
+    )
+    return ranked[:MAX_SEARCH_RESULTS]
 
 
-def _pick_relevant_links(base_url: str, links: Iterable[str], profile_key: str) -> list[str]:
+def _pick_relevant_links(base_url: str, links: Iterable[str], profile_key: str, city_state: str = "") -> list[str]:
     base_host = parse.urlparse(base_url).netloc.lower()
     profile = _profile_config(profile_key)
     profile_hints = tuple(profile.get("link_hints", ()))
+    location_tokens = _location_tokens("", city_state)
+    base_lower = base_url.lower()
+    base_is_generic_location_index = any(hint in base_lower for hint in GENERIC_LOCATION_PATH_HINTS)
     chosen: list[str] = []
     seen: set[str] = set()
     secondary_matches: list[str] = []
@@ -714,6 +745,15 @@ def _pick_relevant_links(base_url: str, links: Iterable[str], profile_key: str) 
         normalized = parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
         lowered = normalized.lower()
         if lowered in seen:
+            continue
+        is_location_link = any(hint in lowered for hint in GENERIC_LOCATION_PATH_HINTS)
+        if (
+            profile_key == "retail_multi_site"
+            and base_is_generic_location_index
+            and is_location_link
+            and location_tokens
+            and not any(token in lowered for token in location_tokens)
+        ):
             continue
         if any(hint in lowered for hint in profile_hints):
             seen.add(lowered)
@@ -803,10 +843,12 @@ def _score_search_result_for_homepage(
     target_name: str,
     address: str,
     city_state: str,
+    profile_key: str = DEFAULT_PROFILE_KEY,
 ) -> int:
     url = result.url.lower()
     title = (result.title or "").lower()
     snippet = (result.snippet or "").lower()
+    haystack = f"{title} {snippet} {url}"
 
     score = 0
 
@@ -840,13 +882,86 @@ def _score_search_result_for_homepage(
         score += 3
 
     tokens = _target_tokens(target_name)
-    haystack = f"{title} {snippet} {url}"
     token_hits = sum(1 for token in tokens if token in haystack)
     score += token_hits * 2
 
     loc_tokens = _location_tokens(address, city_state)
     loc_hits = sum(1 for token in loc_tokens if token in haystack)
     score += min(loc_hits, 3)
+
+    if profile_key == "retail_multi_site":
+        operator_hits = sum(1 for token in OPERATOR_SIGNAL_TERMS if token in haystack)
+        score += operator_hits * 2
+        if result.source_type == "local_press":
+            score += 6
+        if any(hint in url for hint in GENERIC_LOCATION_PATH_HINTS):
+            score -= 5
+            if "near you" in haystack or "find a" in haystack:
+                score -= 4
+        if "mapquest.com" in url:
+            score -= 3
+
+    return score
+
+
+def _score_search_result_for_investigation(
+    result: SearchResult,
+    *,
+    target_name: str,
+    city_state: str,
+    lead_context: str,
+    profile_key: str,
+) -> int:
+    url = (result.url or "").lower()
+    title = (result.title or "").lower()
+    snippet = (result.snippet or "").lower()
+    haystack = " ".join(part for part in [title, snippet, url, lead_context.lower()] if part)
+    score = 0
+
+    if result.source_type == "local_press":
+        score += 9
+    elif result.source_type == "business_registry":
+        score += 6
+    elif result.source_type == "official_registry":
+        score += 5
+    elif result.source_type == "company_website":
+        score += 3
+    elif result.source_type == "public_profile":
+        score += 1
+    else:
+        score -= 2
+
+    bad_hosts = (
+        "facebook.com",
+        "instagram.com",
+        "x.com",
+        "twitter.com",
+        "linkedin.com",
+        "mapquest.com",
+        "yelp.com",
+        "duckduckgo.com",
+    )
+    if any(host in url for host in bad_hosts):
+        score -= 5
+
+    target_hits = sum(1 for token in _target_tokens(target_name) if token in haystack)
+    score += target_hits * 2
+
+    loc_hits = sum(1 for token in _location_tokens("", city_state) if token in haystack)
+    score += min(loc_hits, 3)
+
+    operator_hits = sum(1 for token in OPERATOR_SIGNAL_TERMS if token in haystack)
+    score += operator_hits * 3
+
+    if profile_key == "retail_multi_site":
+        if result.source_type == "local_press":
+            score += 4
+        if any(hint in url for hint in GENERIC_LOCATION_PATH_HINTS):
+            score -= 4
+            if "near you" in haystack or "find a" in haystack:
+                score -= 4
+        if any(token in haystack for token in ("franchise manager", "franchisee", "operator", "llc", "grand opening", "expansion")):
+            score += 5
 
     return score
 
@@ -874,7 +989,7 @@ def _discover_public_homepage(
 
     ranked = sorted(
         search_results,
-        key=lambda item: _score_search_result_for_homepage(item, target_name, address, city_state),
+        key=lambda item: _score_search_result_for_homepage(item, target_name, address, city_state, profile_key),
         reverse=True,
     )
 
@@ -1169,7 +1284,7 @@ def investigate_public_lead(
     home_html = _fetch_optional_url(base_url)
     if home_html:
         pages.append(_parse_page(base_url, home_html))
-        for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key):
+        for link in _pick_relevant_links(base_url, pages[0].links, initial_profile_key, city_state):
             html = _fetch_optional_url(link)
             if not html:
                 continue
