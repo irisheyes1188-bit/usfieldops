@@ -742,7 +742,9 @@ def _classify_public_source(url: str, *, title: str = "", snippet: str = "") -> 
         return "local_press"
     return "company_website"
 
-
+def _state_scope(city_state: str) -> str:
+    parts = [part.strip() for part in (city_state or "").split(",") if part.strip()]
+    return parts[-1] if parts else city_state.strip()
 def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
     state = _state_scope(city_state)
     if not entity_name.strip() or not state:
@@ -755,7 +757,7 @@ def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
         f"{entity_name} {state} expansion",
         f"{entity_name} {state} Kalispell",
     ]
-def _classify_public_source(url: str) -> str:
+def _classify_public_source(url: str, *, title: str = "", snippet: str = "") -> str:
     host = parse.urlparse(url).netloc.lower()
     haystack = f"{title} {snippet} {url}".lower()
     if any(token in host for token in JOB_BOARD_HINTS) or "jobs" in haystack or "hiring" in haystack:
