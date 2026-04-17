@@ -258,6 +258,24 @@ textarea.inp.tall{min-height:130px;}
 .report-heading{font-family:var(--mono);font-size:9px;letter-spacing:1.8px;text-transform:uppercase;color:var(--gold);margin-bottom:6px;}
 .report-text{font-size:12px;line-height:1.7;color:var(--mid);white-space:pre-wrap;}
 .report-list{margin:0;padding-left:18px;color:var(--mid);}
+.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;}
+.report-kv{padding:8px 9px;border:1px solid rgba(180,220,255,.08);border-radius:6px;background:rgba(6,12,22,.48);}
+.report-kv-k{font-family:var(--mono);font-size:8px;letter-spacing:1.3px;text-transform:uppercase;color:var(--lo);margin-bottom:4px;}
+.report-kv-v{font-size:12px;line-height:1.6;color:var(--hi);word-break:break-word;}
+.report-subhead{font-family:var(--mono);font-size:8px;letter-spacing:1.4px;text-transform:uppercase;color:var(--accent);margin:10px 0 6px;}
+.report-card-list{display:flex;flex-direction:column;gap:8px;}
+.report-card{padding:9px 10px;border:1px solid rgba(180,220,255,.08);border-radius:6px;background:rgba(6,12,22,.48);}
+.report-card-title{font-family:var(--head);font-size:14px;font-weight:600;color:var(--hi);margin-bottom:5px;}
+.report-card-meta{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;}
+.report-card-copy{font-size:12px;line-height:1.7;color:var(--mid);}
+.report-muted{color:var(--lo);font-style:italic;}
+.report-link{color:var(--accent);text-decoration:none;word-break:break-all;}
+.report-link:hover{text-decoration:underline;}
+.report-trace-list{display:flex;flex-direction:column;gap:8px;}
+.report-trace-item{padding:8px 10px;border:1px solid rgba(180,220,255,.08);border-radius:6px;background:rgba(255,255,255,.025);}
+.report-trace-item+.report-trace-item{margin-top:0;}
+.report-code-list{margin:0;padding-left:18px;font-family:var(--mono);font-size:10px;line-height:1.7;color:var(--mid);}
+.report-export{margin-top:8px;}
 .report-list li{margin:0 0 6px 0;line-height:1.6;}
 .report-export{margin-top:8px;}
 .m-result-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin-top:8px;}
@@ -1078,6 +1096,18 @@ function isResearchSkillMission(mission){
   var actionType=(mission&&mission.actionType)||(mission&&mission.mockResult&&mission.mockResult.action_type)||'';
   return String(actionType||'').toLowerCase()==='research_skill';
 }
+function isLeadInvestigationMission(mission){
+  var actionType=(mission&&mission.actionType)||(mission&&mission.mockResult&&mission.mockResult.action_type)||'';
+  return String(actionType||'').toLowerCase()==='lead_investigation';
+}
+function getMissionReportKind(mission){
+  if(isResearchSkillMission(mission))return 'research';
+  if(isLeadInvestigationMission(mission))return 'lead';
+  return '';
+}
+function isRichReportMission(mission){
+  return !!getMissionReportKind(mission);
+}
 function parseReportSections(text){
   var raw=String(text||'').trim();
   if(!raw)return [];
@@ -1106,6 +1136,78 @@ function parseReportSections(text){
   flush();
   return sections;
 }
+function reportEsc(value){
+  return esc(value===undefined||value===null?'':String(value));
+}
+function reportUrl(url){
+  var text=String(url||'').trim();
+  return /^https?:\/\//i.test(text)?text:'';
+}
+function reportLink(url,label){
+  var safe=reportUrl(url);
+  if(!safe)return '<span class="report-muted">[not recorded]</span>';
+  return '<a class="report-link" href="'+reportEsc(safe)+'" target="_blank" rel="noopener noreferrer">'+reportEsc(label||safe)+'</a>';
+}
+function reportMuted(text){
+  return '<span class="report-muted">'+reportEsc(text||'[not recorded]')+'</span>';
+}
+function renderReportKeyValueGrid(items){
+  var fields=(Array.isArray(items)?items:[]).filter(function(item){
+    return item && item.label && item.value!==undefined && item.value!==null && String(item.value).trim();
+  });
+  if(!fields.length)return '<div class="report-text"><span class="report-muted">No confirmed details recorded.</span></div>';
+  return '<div class="report-grid">'+fields.map(function(item){
+    return '<div class="report-kv"><div class="report-kv-k">'+reportEsc(item.label)+'</div><div class="report-kv-v">'+item.value+'</div></div>';
+  }).join('')+'</div>';
+}
+function renderLeadCardList(items, emptyText){
+  var rows=(Array.isArray(items)?items:[]).filter(Boolean);
+  if(!rows.length)return '<div class="report-text"><span class="report-muted">'+reportEsc(emptyText||'No entries recorded.')+'</span></div>';
+  return '<div class="report-card-list">'+rows.map(function(item){
+    var title=item.title||item.full_name||item.department||item.label||'Candidate';
+    var badges=[];
+    if(item.role)badges.push('<span class="badge badge-normal">'+reportEsc(item.role)+'</span>');
+    if(item.confidence)badges.push('<span class="badge badge-high">'+reportEsc(item.confidence)+'</span>');
+    if(item.source_type)badges.push('<span class="badge badge-carry">'+reportEsc(String(item.source_type).replace(/_/g,' '))+'</span>');
+    var bits=[];
+    if(item.why_relevant)bits.push('<div><strong>Why relevant:</strong> '+reportEsc(item.why_relevant)+'</div>');
+    if(item.value)bits.push('<div><strong>Value:</strong> '+reportEsc(item.value)+'</div>');
+    if(item.source_url)bits.push('<div><strong>Source:</strong> '+reportLink(item.source_url,item.source_url)+'</div>');
+    if(item.source_excerpt||item.excerpt||item.snippet)bits.push('<div><strong>Excerpt:</strong> '+reportEsc(item.source_excerpt||item.excerpt||item.snippet)+'</div>');
+    if(item.supports)bits.push('<div><strong>Supports:</strong> '+reportEsc(item.supports)+'</div>');
+    if(item.source_date)bits.push('<div><strong>Date:</strong> '+reportEsc(item.source_date)+'</div>');
+    return '<div class="report-card">'
+      +'<div class="report-card-title">'+reportEsc(title)+'</div>'
+      +(badges.length?'<div class="report-card-meta">'+badges.join('')+'</div>':'')
+      +(bits.length?'<div class="report-card-copy">'+bits.join('')+'</div>':'')
+      +'</div>';
+  }).join('')+'</div>';
+}
+function renderTraceLines(items, emptyText){
+  var rows=(Array.isArray(items)?items:[]).filter(function(item){return String(item||'').trim();});
+  if(!rows.length)return '<div class="report-text"><span class="report-muted">'+reportEsc(emptyText||'No trace lines recorded.')+'</span></div>';
+  return '<ol class="report-code-list">'+rows.map(function(item){return '<li>'+reportEsc(item)+'</li>';}).join('')+'</ol>';
+}
+function renderTraceObjects(items, emptyText){
+  var rows=(Array.isArray(items)?items:[]).filter(Boolean);
+  if(!rows.length)return '<div class="report-text"><span class="report-muted">'+reportEsc(emptyText||'No trace records recorded.')+'</span></div>';
+  return '<div class="report-trace-list">'+rows.map(function(item){
+    var title=item.title||item.source||item.url||'Trace item';
+    var meta=[];
+    if(item.source_type)meta.push('<span class="badge badge-carry">'+reportEsc(String(item.source_type).replace(/_/g,' '))+'</span>');
+    if(item.confidence)meta.push('<span class="badge badge-high">'+reportEsc(item.confidence)+'</span>');
+    var bits=[];
+    if(item.url)bits.push('<div><strong>URL:</strong> '+reportLink(item.url,item.url)+'</div>');
+    if(item.supports)bits.push('<div><strong>Supports:</strong> '+reportEsc(item.supports)+'</div>');
+    if(item.source_date)bits.push('<div><strong>Date:</strong> '+reportEsc(item.source_date)+'</div>');
+    if(item.snippet||item.excerpt)bits.push('<div><strong>Snippet:</strong> '+reportEsc(item.snippet||item.excerpt)+'</div>');
+    return '<div class="report-trace-item">'
+      +'<div class="report-card-title">'+reportEsc(title)+'</div>'
+      +(meta.length?'<div class="report-card-meta">'+meta.join('')+'</div>':'')
+      +(bits.length?'<div class="report-card-copy">'+bits.join('')+'</div>':'')
+      +'</div>';
+  }).join('')+'</div>';
+}
 function renderReportSectionBody(body){
   var lines=String(body||'').split(/\r?\n/).filter(function(line){return line.trim();});
   if(!lines.length)return '';
@@ -1117,40 +1219,106 @@ function renderReportSectionBody(body){
   }
   return '<div class="report-text">'+esc(lines.join('\n'))+'</div>';
 }
-function renderMissionResultBodyHtml(mission){
+function renderResearchReportHtml(mission){
   var raw=(mission&&mission.mockResult&&mission.mockResult.full_output)||'';
-  if(!isResearchSkillMission(mission))return esc(raw||'');
   var sections=parseReportSections(raw);
   if(!sections.length)return esc(raw||'');
   var summary=(mission&&mission.mockResult&&mission.mockResult.summary)||'';
   var details=getMissionActionDetails(mission);
   var metaParts=[];
-  if(details.confidence)metaParts.push('<span class="badge badge-high">'+esc(details.confidence+' confidence')+'</span>');
-  if(typeof details.source_count!=='undefined')metaParts.push('<span class="badge badge-live">'+esc(String(details.source_count)+' sources')+'</span>');
-  if(details.queries_run&&details.queries_run.length)metaParts.push('<span class="badge badge-carry">'+esc(String(details.queries_run.length)+' queries')+'</span>');
+  if(details.confidence)metaParts.push('<span class="badge badge-high">'+reportEsc(details.confidence+' confidence')+'</span>');
+  if(typeof details.source_count!=='undefined')metaParts.push('<span class="badge badge-live">'+reportEsc(String(details.source_count)+' sources')+'</span>');
+  if(details.queries_run&&details.queries_run.length)metaParts.push('<span class="badge badge-carry">'+reportEsc(String(details.queries_run.length)+' queries')+'</span>');
   return '<div class="report-shell">'
     +'<div class="report-intro">'
     +'<div class="report-meta">'+metaParts.join('')+'</div>'
     +'<div class="report-kicker">Research Brief</div>'
-    +'<div class="report-summary">'+esc(summary||'Structured research brief ready.')+'</div>'
+    +'<div class="report-summary">'+reportEsc(summary||'Structured research brief ready.')+'</div>'
     +'</div>'
     +sections.map(function(section){
-      return '<div class="report-section"><div class="report-heading">'+esc(section.heading)+'</div>'+renderReportSectionBody(section.body)+'</div>';
+      return '<div class="report-section"><div class="report-heading">'+reportEsc(section.heading)+'</div>'+renderReportSectionBody(section.body)+'</div>';
     }).join('')
     +'</div>';
 }
-function buildMissionExportHtml(mission){
+function renderLeadInvestigationReportHtml(mission){
+  var details=getMissionActionDetails(mission);
+  var raw=(mission&&mission.mockResult&&mission.mockResult.full_output)||'';
+  if(!details||!Object.keys(details).length)return esc(raw||'');
+  var verified=details.verified_entity||{};
+  var leadRelevance=details.lead_relevance||{};
+  var profile=details.investigation_profile||{};
+  var bestContact=details.best_contact||null;
+  var decisionMakers=Array.isArray(details.decision_maker_map)?details.decision_maker_map:[];
+  var departmentRoutes=Array.isArray(details.department_routes)?details.department_routes:[];
+  var contactLadder=Array.isArray(details.contact_ladder)?details.contact_ladder:[];
+  var sourceTrail=Array.isArray(details.source_trail)?details.source_trail:[];
+  var queryTrace=Array.isArray(details.query_trace)?details.query_trace:[];
+  var searchResultTrace=Array.isArray(details.search_result_trace)?details.search_result_trace:[];
+  var operatingEntity=details.operating_entity||verified.operating_entity||'';
+  var summary=(mission&&mission.mockResult&&mission.mockResult.summary)||leadRelevance.summary||'Lead investigation completed.';
+  var metaParts=[];
+  if(leadRelevance.viability||details.recommendation)metaParts.push('<span class="badge badge-live">'+reportEsc((leadRelevance.viability||details.recommendation))+'</span>');
+  if(profile.label)metaParts.push('<span class="badge badge-carry">'+reportEsc(profile.label)+'</span>');
+  if(bestContact&&bestContact.confidence)metaParts.push('<span class="badge badge-high">'+reportEsc(bestContact.confidence+' best-contact confidence')+'</span>');
+  if(verified.entity_type)metaParts.push('<span class="badge badge-normal">'+reportEsc(verified.entity_type.replace(/_/g,' '))+'</span>');
+  var bestContactHtml=bestContact?renderLeadCardList([bestContact],'No single best named contact confirmed from the current public trail.'):
+    '<div class="report-text"><span class="report-muted">No single best named contact confirmed.</span></div>';
+  return '<div class="report-shell">'
+    +'<div class="report-intro">'
+    +'<div class="report-meta">'+metaParts.join('')+'</div>'
+    +'<div class="report-kicker">Lead Dossier</div>'
+    +'<div class="report-summary">'+reportEsc(summary)+'</div>'
+    +'<div class="report-text">'
+      +(leadRelevance.reason?'<div><strong>Why this lead matters:</strong> '+reportEsc(leadRelevance.reason)+'</div>':'')
+      +(profile.strategy_summary?'<div><strong>Investigation profile:</strong> '+reportEsc(profile.strategy_summary)+'</div>':'')
+      +((leadRelevance.viability||details.recommendation)?'<div><strong>Recommendation:</strong> '+reportEsc(leadRelevance.viability||details.recommendation)+'</div>':'')
+    +'</div>'
+    +'</div>'
+    +'<div class="report-section"><div class="report-heading">Verified Entity</div>'
+      +renderReportKeyValueGrid([
+        {label:'Verified Entity',value:reportEsc(verified.name||'')||reportMuted()},
+        {label:'Website',value:verified.website?reportLink(verified.website,verified.website):reportMuted()},
+        {label:'Address',value:reportEsc(verified.address||'')||reportMuted()},
+        {label:'City / State',value:reportEsc(verified.city_state||'')||reportMuted()},
+        {label:'Entity Type',value:reportEsc(verified.entity_type||'')||reportMuted()},
+        {label:'Operating Entity',value:reportEsc(operatingEntity||'')||reportMuted()},
+      ])
+    +'</div>'
+    +'<div class="report-section"><div class="report-heading">Best Contact</div>'+bestContactHtml+'</div>'
+    +'<div class="report-section"><div class="report-heading">Decision Maker Map</div>'
+      +renderLeadCardList(decisionMakers,'No named decision-maker candidates were extracted from the public pages reviewed.')
+    +'</div>'
+    +'<div class="report-section"><div class="report-heading">Department Routes</div>'
+      +renderLeadCardList(departmentRoutes,'No backup departments were inferred from the public source trail.')
+    +'</div>'
+    +'<div class="report-section"><div class="report-heading">Contact Ladder</div>'
+      +renderLeadCardList(contactLadder,'No public contact ladder items were found.')
+    +'</div>'
+    +'<div class="report-section"><div class="report-heading">Show Your Work</div>'
+      +'<div class="report-subhead">Query Trace</div>'+renderTraceLines(queryTrace,'No query trace recorded.')
+      +'<div class="report-subhead">Search Result Trace</div>'+renderTraceObjects(searchResultTrace,'No search result trace recorded.')
+      +'<div class="report-subhead">Source Trail</div>'+renderTraceObjects(sourceTrail,'No source trail recorded.')
+    +'</div>'
+    +'</div>';
+}
+function renderMissionResultBodyHtml(mission){
+  var raw=(mission&&mission.mockResult&&mission.mockResult.full_output)||'';
+  if(isResearchSkillMission(mission))return renderResearchReportHtml(mission);
+  if(isLeadInvestigationMission(mission))return renderLeadInvestigationReportHtml(mission);
+  return esc(raw||'');
+}
+function buildResearchMissionExportHtml(mission){
   var details=getMissionActionDetails(mission);
   var sections=parseReportSections((mission&&mission.mockResult&&mission.mockResult.full_output)||'');
-  var title=esc((mission&&mission.title)||'FieldOps Report');
-  var summary=esc((mission&&mission.mockResult&&mission.mockResult.summary)||'');
+  var title=reportEsc((mission&&mission.title)||'FieldOps Report');
+  var summary=reportEsc((mission&&mission.mockResult&&mission.mockResult.summary)||'');
   var meta=[
-    details.confidence?'Confidence: '+esc(details.confidence):'',
-    typeof details.source_count!=='undefined'?'Sources: '+esc(String(details.source_count)):'',
-    (mission&&mission.lane)?'Lane: '+esc(String(mission.lane).toUpperCase()):''
+    details.confidence?'Confidence: '+reportEsc(details.confidence):'',
+    typeof details.source_count!=='undefined'?'Sources: '+reportEsc(String(details.source_count)):'',
+    (mission&&mission.lane)?'Lane: '+reportEsc(String(mission.lane).toUpperCase()):''
   ].filter(Boolean).join(' | ');
   var bodyHtml=sections.map(function(section){
-    return '<h2>'+esc(section.heading)+'</h2>'+renderReportSectionBody(section.body).replace(/class="report-[^"]+"/g,'');
+    return '<h2>'+reportEsc(section.heading)+'</h2>'+renderReportSectionBody(section.body).replace(/class="report-[^"]+"/g,'');
   }).join('');
   return '<html><head><meta charset="utf-8"><title>'+title+'</title><style>'
     +'body{font-family:Calibri,Arial,sans-serif;color:#111;padding:36px;line-height:1.5;}'
@@ -1162,6 +1330,98 @@ function buildMissionExportHtml(mission){
     +(summary?'<div class="summary"><strong>Summary:</strong> '+summary+'</div>':'')
     +bodyHtml
     +'</body></html>';
+}
+function buildLeadMissionExportHtml(mission){
+  var details=getMissionActionDetails(mission);
+  var verified=details.verified_entity||{};
+  var leadRelevance=details.lead_relevance||{};
+  var profile=details.investigation_profile||{};
+  var bestContact=details.best_contact||null;
+  var decisionMakers=Array.isArray(details.decision_maker_map)?details.decision_maker_map:[];
+  var departmentRoutes=Array.isArray(details.department_routes)?details.department_routes:[];
+  var contactLadder=Array.isArray(details.contact_ladder)?details.contact_ladder:[];
+  var sourceTrail=Array.isArray(details.source_trail)?details.source_trail:[];
+  var queryTrace=Array.isArray(details.query_trace)?details.query_trace:[];
+  var searchResultTrace=Array.isArray(details.search_result_trace)?details.search_result_trace:[];
+  var operatingEntity=details.operating_entity||verified.operating_entity||'';
+  function exportList(items, mapFn, emptyText){
+    var rows=(Array.isArray(items)?items:[]).filter(Boolean);
+    if(!rows.length)return '<p><em>'+reportEsc(emptyText||'No entries recorded.')+'</em></p>';
+    return '<ul>'+rows.map(function(item){return '<li>'+mapFn(item)+'</li>';}).join('')+'</ul>';
+  }
+  var summary=reportEsc((mission&&mission.mockResult&&mission.mockResult.summary)||leadRelevance.summary||'Lead investigation completed.');
+  return '<html><head><meta charset="utf-8"><title>'+reportEsc((mission&&mission.title)||'FieldOps Lead Dossier')+'</title><style>'
+    +'body{font-family:Calibri,Arial,sans-serif;color:#111;padding:36px;line-height:1.5;}'
+    +'h1{font-size:24px;margin:0 0 8px 0;}h2{font-size:14px;letter-spacing:.8px;margin:18px 0 6px 0;text-transform:uppercase;}'
+    +'p{margin:0 0 10px 0;}ul{margin:0 0 10px 20px;}li{margin:0 0 6px 0;}a{color:#0d4fa0;text-decoration:none;}'
+    +'.meta{font-size:11px;color:#555;margin-bottom:16px;}.summary{font-size:12px;margin-bottom:16px;}'
+    +'</style></head><body>'
+    +'<h1>'+reportEsc((mission&&mission.title)||'Lead Dossier')+'</h1>'
+    +'<div class="summary"><strong>Summary:</strong> '+summary+'</div>'
+    +'<div class="meta">'+[
+      leadRelevance.viability||details.recommendation?'Recommendation: '+reportEsc(leadRelevance.viability||details.recommendation):'',
+      profile.label?'Profile: '+reportEsc(profile.label):'',
+      verified.entity_type?'Entity Type: '+reportEsc(verified.entity_type):''
+    ].filter(Boolean).join(' | ')+'</div>'
+    +'<h2>Verified Entity</h2>'
+    +'<p><strong>Name:</strong> '+reportEsc(verified.name||'[not confirmed]')+'<br>'
+    +'<strong>Website:</strong> '+(verified.website?'<a href="'+reportEsc(verified.website)+'">'+reportEsc(verified.website)+'</a>':'[not recorded]')+'<br>'
+    +'<strong>Address:</strong> '+reportEsc(verified.address||'[not confirmed]')+'<br>'
+    +'<strong>City / State:</strong> '+reportEsc(verified.city_state||'[not confirmed]')+'<br>'
+    +'<strong>Operating Entity:</strong> '+reportEsc(operatingEntity||'[not confirmed]')+'</p>'
+    +'<h2>Best Contact</h2>'
+    +(bestContact?'<p>'
+      +'<strong>Name:</strong> '+reportEsc(bestContact.full_name||'[not confirmed]')+'<br>'
+      +'<strong>Role:</strong> '+reportEsc(bestContact.role||'[not recorded]')+'<br>'
+      +'<strong>Confidence:</strong> '+reportEsc(bestContact.confidence||'[not recorded]')+'<br>'
+      +'<strong>Why relevant:</strong> '+reportEsc(bestContact.why_relevant||'[not recorded]')+'<br>'
+      +'<strong>Source:</strong> '+(bestContact.source_url?'<a href="'+reportEsc(bestContact.source_url)+'">'+reportEsc(bestContact.source_url)+'</a>':'[not recorded]')+'<br>'
+      +'<strong>Source type:</strong> '+reportEsc(bestContact.source_type||'[not recorded]')+'<br>'
+      +'<strong>Excerpt:</strong> '+reportEsc(bestContact.source_excerpt||'[not recorded]')+'</p>'
+      :'<p><em>No single best named contact confirmed.</em></p>')
+    +'<h2>Decision Maker Map</h2>'
+    +exportList(decisionMakers,function(item){
+      return '<strong>'+reportEsc(item.full_name||'Candidate')+'</strong>'
+        +(item.role?' — '+reportEsc(item.role):'')
+        +(item.confidence?' ('+reportEsc(item.confidence)+')':'')
+        +(item.why_relevant?'<br>Why relevant: '+reportEsc(item.why_relevant):'')
+        +(item.source_type?'<br>Source type: '+reportEsc(item.source_type):'')
+        +(item.source_url?'<br>Source: <a href="'+reportEsc(item.source_url)+'">'+reportEsc(item.source_url)+'</a>':'')
+        +(item.source_excerpt?'<br>Excerpt: '+reportEsc(item.source_excerpt):'');
+    },'No named decision-maker candidates were extracted.')
+    +'<h2>Department Routes</h2>'
+    +exportList(departmentRoutes,function(item){
+      return '<strong>'+reportEsc(item.department||'Department')+'</strong>'
+        +(item.confidence?' ('+reportEsc(item.confidence)+')':'')
+        +(item.why_relevant?'<br>Why relevant: '+reportEsc(item.why_relevant):'')
+        +(item.source_url?'<br>Source: <a href="'+reportEsc(item.source_url)+'">'+reportEsc(item.source_url)+'</a>':'');
+    },'No backup departments were inferred.')
+    +'<h2>Contact Ladder</h2>'
+    +exportList(contactLadder,function(item){
+      return '<strong>'+reportEsc(item.label||'Route')+':</strong> '+reportEsc(item.value||'')
+        +(item.confidence?' ('+reportEsc(item.confidence)+')':'');
+    },'No contact ladder items recorded.')
+    +'<h2>Query Trace</h2>'
+    +exportList(queryTrace,function(item){return reportEsc(item);},'No query trace recorded.')
+    +'<h2>Search Result Trace</h2>'
+    +exportList(searchResultTrace,function(item){
+      return '<strong>'+reportEsc(item.title||item.url||'Search result')+'</strong>'
+        +(item.url?'<br>URL: <a href="'+reportEsc(item.url)+'">'+reportEsc(item.url)+'</a>':'')
+        +(item.source_type?'<br>Source type: '+reportEsc(item.source_type):'')
+        +(item.snippet?'<br>Snippet: '+reportEsc(item.snippet):'');
+    },'No search result trace recorded.')
+    +'<h2>Source Trail</h2>'
+    +exportList(sourceTrail,function(item){
+      return '<strong>'+reportEsc(item.source||'Source')+'</strong>'
+        +(item.source_type?'<br>Source type: '+reportEsc(item.source_type):'')
+        +(item.supports?'<br>Supports: '+reportEsc(item.supports):'')
+        +(item.source_date?'<br>Date: '+reportEsc(item.source_date):'');
+    },'No source trail recorded.')
+    +'</body></html>';
+}
+function buildMissionExportHtml(mission){
+  if(isLeadInvestigationMission(mission))return buildLeadMissionExportHtml(mission);
+  return buildResearchMissionExportHtml(mission);
 }
 function exportMissionReport(id){
   var mission=missions.find(function(item){return item.id===id;})||completedMissions.find(function(item){return item.id===id;});
@@ -1369,8 +1629,13 @@ async function dispatchMission(id){
     mission.status='queued';
     mission.updatedAt=new Date().toISOString();
     updateCounts();renderQueue();scheduleStateSave();
-    setBackendStatus('offline','Dispatch Failed','Could not reach mission processor');
-    showToast('Mission processing failed');
+    var detail=(e&&e.message)?e.message:'Could not reach mission processor';
+    setBackendStatus('offline','Dispatch Failed',detail+' via '+API_BASE);
+    if(e&&e.status===404){
+      showToast('Mission was not saved to backend before dispatch');
+    }else{
+      showToast('Mission processing failed');
+    }
   }finally{
     delete dispatchingMissionIds[id];
   }
@@ -1879,6 +2144,8 @@ function renderQueue(){
     if(m.objective){var objEl=document.createElement('div');objEl.className='m-obj';objEl.textContent=m.objective.substring(0,140)+(m.objective.length>140?'...':'');card.appendChild(objEl);}
     if(m.mockResult&&m.mockResult.summary){
       var stamp=m.mockResult.timestamp?new Date(m.mockResult.timestamp).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+      var reportKind=getMissionReportKind(m);
+      var reportLabel=reportKind==='research'?'Research Brief':(reportKind==='lead'?'Lead Dossier':'Full Output');
       var resultHtml='<div class="m-result">'
         +'<div class="m-result-head">'
         +'<span class="badge badge-complete">'+esc((m.mockResult.status||'complete').toUpperCase())+'</span>'
@@ -1889,8 +2156,8 @@ function renderQueue(){
         +'</div>'
         +'<div class="m-result-summary">'+esc(m.mockResult.summary)+'</div>'
         +renderActionMetadataHtml(m)
-        +(isResearchSkillMission(m)?'<div class="report-export"><button class="btn btn-ghost btn-sm" onclick="exportMissionReport(\''+esc(m.id)+'\')">Export Report</button></div>':'')
-        +'<details><summary>'+(isResearchSkillMission(m)?'Research Brief':'Full Output')+'</summary><div class="m-result-body'+(isResearchSkillMission(m)?' report':'')+'">'+renderMissionResultBodyHtml(m)+'</div></details>'
+        +(isRichReportMission(m)?'<div class="report-export"><button class="btn btn-ghost btn-sm" onclick="exportMissionReport(\''+esc(m.id)+'\')">Export Report</button></div>':'')
+        +'<details><summary>'+reportLabel+'</summary><div class="m-result-body'+(isRichReportMission(m)?' report':'')+'">'+renderMissionResultBodyHtml(m)+'</div></details>'
         +'</div>';
       card.insertAdjacentHTML('beforeend', resultHtml);
     }
@@ -1904,7 +2171,7 @@ function renderQueue(){
     actions.appendChild(mkBtn('btn-ghost btn-sm','Dupe',(function(id){return function(){duplicateMission(id);};})(m.id)));
     var isPinned=criticalId===m.id;
     actions.appendChild(mkBtn('btn-sm '+(isPinned?'btn-danger':'btn-ghost'),isPinned?'Focus ON':'Pin Focus',(function(id){return function(){pinFocus(id);};})(m.id)));
-    if(m.mockResult&&isResearchSkillMission(m))actions.appendChild(mkBtn('btn-ghost btn-sm','Export Report',(function(id){return function(){exportMissionReport(id);};})(m.id)));
+    if(m.mockResult&&isRichReportMission(m))actions.appendChild(mkBtn('btn-ghost btn-sm','Export Report',(function(id){return function(){exportMissionReport(id);};})(m.id)));
     if(m.prompt)actions.appendChild(mkBtn('btn-ghost btn-sm','Copy Prompt',(function(id){return function(){copyMissionPrompt(id);};})(m.id)));
     actions.appendChild(mkBtn('btn-danger btn-sm','X',(function(id){return function(){deleteMission(id);};})(m.id)));
     card.appendChild(actions);list.appendChild(card);
@@ -2651,10 +2918,12 @@ async function saveStateNow(){
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(collectAppState())
     });
+    return true;
   }catch(e){
     if(e&&e.status===401)return;
     setBackendStatus('offline','State Save Failed',((e&&e.message)?e.message:'Unknown error')+' via '+API_BASE);
     showToast('State save failed');
+    throw e;
   }
 }
 async function loadStateFromBackend(){
