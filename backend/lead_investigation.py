@@ -147,6 +147,20 @@ QUERY_VARIANTS = (
     "llc",
 )
 NOISY_NAME_PREFIXES = {"us", "our", "meet", "team", "staff", "board", "leadership", "contact"}
+CORPORATE_NAME_TOKENS = {
+    "holdings",
+    "brands",
+    "companies",
+    "company",
+    "lodge",
+    "hearing",
+    "wash",
+    "car",
+    "inc",
+    "corp",
+    "corporation",
+    "llc",
+}
 PUBLIC_INSTITUTION_TOKENS = (
     "city of",
     "county",
@@ -211,6 +225,26 @@ LOCAL_PRESS_HINTS = (
     "news",
     "interlake",
 )
+JOB_BOARD_HINTS = (
+    "glassdoor.com",
+    "indeed.com",
+    "ziprecruiter.com",
+    "linkedin.com/jobs",
+)
+DIRECTORY_HINTS = (
+    "superpages.com",
+    "yellowpages.com",
+    "yelp.com",
+    "mapquest.com",
+)
+PROJECT_RECORD_HINTS = (
+    "onlineplanservice.com",
+    "builders exchange",
+    "plans exchange",
+    "plan room",
+    "project details",
+    "bid date",
+)
 GENERIC_LOCATION_PATH_HINTS = (
     "/locations/",
     "/location/",
@@ -229,6 +263,11 @@ OPERATOR_SIGNAL_TERMS = (
     "opening",
     "rollout",
     "developer",
+    "assistant shop manager",
+    "shop manager",
+    "applicant",
+    "permit",
+    "project",
 )
 ENTITY_PROFILES = {
     "nonprofit": {
@@ -414,7 +453,7 @@ class _DuckDuckGoHTMLParser(HTMLParser):
                 title = re.sub(r"\s+", " ", " ".join(self._current_title_parts)).strip()
                 snippet = re.sub(r"\s+", " ", " ".join(self._current_snippet_parts)).strip()
                 if title and self._current_url:
-                    source_type = _classify_public_source(self._current_url)
+                    source_type = _classify_public_source(self._current_url, title=title, snippet=snippet)
                     self.results.append(
                         SearchResult(
                             url=self._current_url,
@@ -543,7 +582,7 @@ def _parse_page(url: str, html: str) -> FetchedPage:
         site_name=_extract_site_name(html),
         text=text,
         links=links,
-        source_type=_classify_public_source(url),
+        source_type=_classify_public_source(url, title=_extract_title(html), snippet=text[:300]),
     )
 
 
@@ -625,6 +664,10 @@ def _build_search_queries(
             f"{base} llc",
             f"{base} operator",
             f"{base} expansion",
+            f"{base} permit holder",
+            f"{base} applicant",
+            f"{base} developer",
+            f"{base} project",
         ]
     )
     if profile_key == "nonprofit":
@@ -658,6 +701,8 @@ def _build_search_queries(
                 f"{base} store development",
                 f"{base} facilities manager",
                 f"{base} franchise manager",
+                f"{base} assistant shop manager",
+                f"{base} shop manager",
             ]
         )
     deduped: list[str] = []
@@ -671,11 +716,31 @@ def _build_search_queries(
             continue
         seen.add(key)
         deduped.append(normalized)
-    return deduped[:8]
+    return deduped[:12]
 
-def _state_scope(city_state: str) -> str:
-    parts = [part.strip() for part in (city_state or "").split(",") if part.strip()]
-    return parts[-1] if parts else city_state.strip()
+
+def _classify_public_source(url: str, *, title: str = "", snippet: str = "") -> str:
+    host = parse.urlparse(url).netloc.lower()
+    haystack = f"{title} {snippet} {url}".lower()
+    if any(token in host for token in JOB_BOARD_HINTS) or "jobs" in haystack or "hiring" in haystack:
+        return "job_board"
+    if any(token in host for token in DIRECTORY_HINTS):
+        return "directory_listing"
+    if any(token in host for token in ("irs.gov", "guidestar", "propublica")):
+        return "nonprofit_record"
+    if any(token in host for token in ("sec.gov", "sam.gov")):
+        return "official_registry"
+    if any(token in host for token in ("opencorporates", "sos", "bizapedia")):
+        return "business_registry"
+    if any(token in host for token in ("linkedin.com", "zoominfo.com", "rocketreach.co")):
+        return "public_profile"
+    if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com")):
+        return "public_social"
+    if any(token in haystack for token in PROJECT_RECORD_HINTS) or "onlineplanservice.com" in host:
+        return "project_record"
+    if any(token in host for token in LOCAL_PRESS_HINTS):
+        return "local_press"
+    return "company_website"
 
 
 def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
@@ -692,6 +757,11 @@ def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
     ]
 def _classify_public_source(url: str) -> str:
     host = parse.urlparse(url).netloc.lower()
+    haystack = f"{title} {snippet} {url}".lower()
+    if any(token in host for token in JOB_BOARD_HINTS) or "jobs" in haystack or "hiring" in haystack:
+        return "job_board"
+    if any(token in host for token in DIRECTORY_HINTS):
+        return "directory_listing"
     if any(token in host for token in ("irs.gov", "guidestar", "propublica")):
         return "nonprofit_record"
     if any(token in host for token in ("sec.gov", "sam.gov")):
@@ -702,6 +772,8 @@ def _classify_public_source(url: str) -> str:
         return "public_profile"
     if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com")):
         return "public_social"
+    if any(token in haystack for token in PROJECT_RECORD_HINTS) or "onlineplanservice.com" in host:
+        return "project_record"
     if any(token in host for token in LOCAL_PRESS_HINTS):
         return "local_press"
     return "company_website"
@@ -818,6 +890,9 @@ def _normalize_candidate_name(name: str) -> str:
     cleaned = " ".join(parts[:3]).strip(" -\u2013\u2014")
     if not re.match(r"^[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,2}$", cleaned):
         return ""
+    lowered_parts = {part.lower().strip(".,") for part in parts}
+    if lowered_parts & CORPORATE_NAME_TOKENS:
+        return ""
     return cleaned
 
 
@@ -854,6 +929,62 @@ def _extract_operating_entity(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _score_entity_candidate(entity: str, page: FetchedPage, city_state: str, target_name: str) -> int:
+    entity_lower = entity.lower()
+    haystack = f"{page.title} {page.text[:400]} {page.url}".lower()
+    score = 0
+    if page.source_type == "local_press":
+        score += 8
+    elif page.source_type == "project_record":
+        score += 9
+    elif page.source_type == "business_registry":
+        score += 7
+    elif page.source_type == "job_board":
+        score += 3
+    elif page.source_type == "company_website":
+        score += 1
+    else:
+        score -= 1
+    if "llc" in entity_lower:
+        score += 8
+    if any(token in haystack for token in _location_tokens("", city_state)):
+        score += 4
+    if any(token in haystack for token in OPERATOR_SIGNAL_TERMS):
+        score += 4
+    if any(token in entity_lower for token in ("driven brands",)):
+        score -= 8
+    if any(token in entity_lower for token in _target_tokens(target_name)):
+        score += 2
+    return score
+
+
+def _extract_best_operating_entity(pages: list[FetchedPage], city_state: str, target_name: str) -> str:
+    candidates: list[tuple[int, str]] = []
+    for page in pages:
+        text = " ".join(part for part in [page.title, page.text] if part)
+        for match in ENTITY_NAME_RE.findall(text or ""):
+            candidate = match.strip()
+            candidates.append((_score_entity_candidate(candidate, page, city_state, target_name), candidate))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][1]
+
+
+def _best_entity_like_name(pages: list[FetchedPage], target_name: str) -> str:
+    for page in pages:
+        if page.source_type in {"job_board", "directory_listing"}:
+            continue
+        if page.site_name:
+            return page.site_name
+    for page in pages:
+        if page.source_type in {"job_board", "directory_listing"}:
+            continue
+        if page.title.strip():
+            return page.title.split("|")[0].split("-")[0].strip()
+    return target_name
+
+
 def _score_search_result_for_homepage(
     result: SearchResult,
     target_name: str,
@@ -868,12 +999,20 @@ def _score_search_result_for_homepage(
 
     score = 0
 
-    if result.source_type == "company_website":
-        score += 5
-    elif result.source_type in {"business_registry", "official_registry"}:
-        score += 2
+    if result.source_type == "project_record":
+        score += 11
     elif result.source_type == "local_press":
-        score += 1
+        score += 9
+    elif result.source_type == "business_registry":
+        score += 7
+    elif result.source_type == "official_registry":
+        score += 5
+    elif result.source_type == "company_website":
+        score += 4
+    elif result.source_type == "job_board":
+        score -= 10
+    elif result.source_type == "directory_listing":
+        score -= 8
     else:
         score -= 2
 
@@ -910,6 +1049,10 @@ def _score_search_result_for_homepage(
         score += operator_hits * 2
         if result.source_type == "local_press":
             score += 6
+        if result.source_type == "project_record":
+            score += 7
+        if result.source_type == "job_board":
+            score -= 8
         if any(hint in url for hint in GENERIC_LOCATION_PATH_HINTS):
             score -= 5
             if "near you" in haystack or "find a" in haystack:
@@ -934,14 +1077,20 @@ def _score_search_result_for_investigation(
     haystack = " ".join(part for part in [title, snippet, url, lead_context.lower()] if part)
     score = 0
 
-    if result.source_type == "local_press":
-        score += 9
+    if result.source_type == "project_record":
+        score += 12
+    elif result.source_type == "local_press":
+        score += 10
     elif result.source_type == "business_registry":
-        score += 6
+        score += 7
     elif result.source_type == "official_registry":
         score += 5
     elif result.source_type == "company_website":
         score += 3
+    elif result.source_type == "job_board":
+        score += 1
+    elif result.source_type == "directory_listing":
+        score -= 8
     elif result.source_type == "public_profile":
         score += 1
     else:
@@ -952,7 +1101,6 @@ def _score_search_result_for_investigation(
         "instagram.com",
         "x.com",
         "twitter.com",
-        "linkedin.com",
         "mapquest.com",
         "yelp.com",
         "duckduckgo.com",
@@ -972,12 +1120,22 @@ def _score_search_result_for_investigation(
     if profile_key == "retail_multi_site":
         if result.source_type == "local_press":
             score += 4
+        if result.source_type == "project_record":
+            score += 7
+        if result.source_type == "job_board" and "llc" in haystack and any(
+            token in haystack for token in _location_tokens("", city_state)
+        ):
+            score += 4
+        elif result.source_type == "job_board":
+            score -= 6
         if any(hint in url for hint in GENERIC_LOCATION_PATH_HINTS):
             score -= 4
             if "near you" in haystack or "find a" in haystack:
                 score -= 4
-        if any(token in haystack for token in ("franchise manager", "franchisee", "operator", "llc", "grand opening", "expansion")):
+        if any(token in haystack for token in ("franchise manager", "franchisee", "operator", "llc", "grand opening", "expansion", "project details", "bid date")):
             score += 5
+        if "driven brands" in haystack and not any(token in haystack for token in ("butte", "last best oil change")):
+            score -= 6
 
     return score
 
@@ -1046,9 +1204,9 @@ def _extract_role_candidates_from_text(
             seen.add(key)
             confidence = "Medium"
             reason = "Named on a public page with a role/title."
-            if source_type == "local_press":
+            if source_type in {"local_press", "project_record"}:
                 confidence = "High"
-                reason = "Named in local public coverage tied to the target business or rollout."
+                reason = "Named in public coverage tied to the target business, project, or rollout."
             if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
                 confidence = "High"
                 reason = "Named on a public page with a role matching the requested contact type."
@@ -1075,7 +1233,7 @@ def _extract_role_candidates_from_text(
             seen.add(key)
             confidence = "Medium"
             reason = "Named on a public page with a public leadership title."
-            if source_type == "local_press":
+            if source_type in {"local_press", "project_record"}:
                 confidence = "High"
                 reason = "Named in local public coverage with an operational title."
             if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
@@ -1173,6 +1331,12 @@ def _dedupe_department_routes(routes: list[dict]) -> list[dict]:
 
 def _supports_for_page(page: FetchedPage) -> str:
     lowered = page.url.lower()
+    if page.source_type == "job_board":
+        return "Public hiring signal"
+    if page.source_type == "directory_listing":
+        return "Directory listing signal"
+    if page.source_type == "project_record":
+        return "Project, plan-room, or bid-record signal"
     if page.source_type == "nonprofit_record":
         return "Public nonprofit leadership or board record"
     if page.source_type == "business_registry":
@@ -1210,7 +1374,7 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 3
     else:
         score += 1
-    if source_type in {"company_website", "official_registry", "nonprofit_record", "local_press", "public_profile"}:
+    if source_type in {"company_website", "official_registry", "nonprofit_record", "local_press", "public_profile", "project_record"}:
         score += 2
     desired_tokens = {
         token.lower()
@@ -1229,7 +1393,7 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         token in role for token in ("owner", "president", "principal")
     ):
         score += 3
-    if source_type == "local_press" and any(token in role for token in ("franchise", "operator", "owner", "manager", "developer")):
+    if source_type in {"local_press", "project_record"} and any(token in role for token in ("franchise", "operator", "owner", "manager", "developer")):
         score += 4
     return score
 
@@ -1337,7 +1501,7 @@ def investigate_public_lead(
             "FieldOps reached public-source results but could not extract usable public text."
         )
 
-    operating_entity = _extract_operating_entity(combined_text)
+    operating_entity = _extract_best_operating_entity(pages, city_state, target_name) or _extract_operating_entity(combined_text)
     if operating_entity and operating_entity.lower() not in target_name.lower():
         entity_queries = (
             _build_search_queries(
@@ -1404,12 +1568,7 @@ def investigate_public_lead(
     candidates = _dedupe_role_candidates(all_candidates)
     department_routes = _dedupe_department_routes(all_department_routes)
 
-    entity_name = (
-        operating_entity
-        or next((page.site_name for page in pages if page.site_name), "")
-        or next((page.title.split("|")[0].split("-")[0].strip() for page in pages if page.title.strip()), "")
-        or target_name
-    )
+    entity_name = operating_entity or _best_entity_like_name(pages, target_name)
     nonprofit_signals = any(token in f"{target_name} {entity_name} {lead_context}".lower() for token in NONPROFIT_TOKENS) or any(
         page.source_type == "nonprofit_record" for page in pages
     )
