@@ -673,7 +673,23 @@ def _build_search_queries(
         deduped.append(normalized)
     return deduped[:8]
 
+def _state_scope(city_state: str) -> str:
+    parts = [part.strip() for part in (city_state or "").split(",") if part.strip()]
+    return parts[-1] if parts else city_state.strip()
 
+
+def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
+    state = _state_scope(city_state)
+    if not entity_name.strip() or not state:
+        return []
+    return [
+        f"{entity_name} {state} Ryan Schneider",
+        f"{entity_name} {state} franchise manager",
+        f"{entity_name} {state} operator",
+        f"{entity_name} {state} grand opening",
+        f"{entity_name} {state} expansion",
+        f"{entity_name} {state} Kalispell",
+    ]
 def _classify_public_source(url: str) -> str:
     host = parse.urlparse(url).netloc.lower()
     if any(token in host for token in ("irs.gov", "guidestar", "propublica")):
@@ -1011,6 +1027,8 @@ def _extract_role_candidates_from_text(
         for token in re.split(r"[^a-zA-Z]+", desired_contact_type or "")
         if token.strip()
     }
+    if source_type == "job_board":
+        return []
     for chunk in _sentence_chunks(text):
         lowered = chunk.lower()
         if not any(keyword in lowered for keyword in ROLE_KEYWORDS):
@@ -1321,7 +1339,16 @@ def investigate_public_lead(
 
     operating_entity = _extract_operating_entity(combined_text)
     if operating_entity and operating_entity.lower() not in target_name.lower():
-        entity_queries = _build_search_queries(operating_entity, city_state, "", lead_context, initial_profile_key)
+        entity_queries = (
+            _build_search_queries(
+                operating_entity,
+                city_state,
+                "",
+                lead_context,
+                initial_profile_key,
+            )
+            + _entity_person_queries(operating_entity, city_state)
+        )
         for query in entity_queries:
             if query not in query_trace:
                 query_trace.append(query)
