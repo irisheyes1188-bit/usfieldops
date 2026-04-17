@@ -1524,7 +1524,6 @@ async function saveStateNow(){
   try{
     await apiFetch('/state',{
       method:'POST',
-      keepalive:true,
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(collectAppState())
     });
@@ -2914,7 +2913,6 @@ async function saveStateNow(){
   try{
     await apiFetch('/state',{
       method:'POST',
-      keepalive:true,
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(collectAppState())
     });
