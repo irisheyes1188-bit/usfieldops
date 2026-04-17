@@ -719,29 +719,6 @@ def _build_search_queries(
     return deduped[:12]
 
 
-def _classify_public_source(url: str, *, title: str = "", snippet: str = "") -> str:
-    host = parse.urlparse(url).netloc.lower()
-    haystack = f"{title} {snippet} {url}".lower()
-    if any(token in host for token in JOB_BOARD_HINTS) or "jobs" in haystack or "hiring" in haystack:
-        return "job_board"
-    if any(token in host for token in DIRECTORY_HINTS):
-        return "directory_listing"
-    if any(token in host for token in ("irs.gov", "guidestar", "propublica")):
-        return "nonprofit_record"
-    if any(token in host for token in ("sec.gov", "sam.gov")):
-        return "official_registry"
-    if any(token in host for token in ("opencorporates", "sos", "bizapedia")):
-        return "business_registry"
-    if any(token in host for token in ("linkedin.com", "zoominfo.com", "rocketreach.co")):
-        return "public_profile"
-    if any(token in host for token in ("facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com")):
-        return "public_social"
-    if any(token in haystack for token in PROJECT_RECORD_HINTS) or "onlineplanservice.com" in host:
-        return "project_record"
-    if any(token in host for token in LOCAL_PRESS_HINTS):
-        return "local_press"
-    return "company_website"
-
 def _state_scope(city_state: str) -> str:
     parts = [part.strip() for part in (city_state or "").split(",") if part.strip()]
     return parts[-1] if parts else city_state.strip()
@@ -750,12 +727,14 @@ def _entity_person_queries(entity_name: str, city_state: str) -> list[str]:
     if not entity_name.strip() or not state:
         return []
     return [
-        f"{entity_name} {state} Ryan Schneider",
         f"{entity_name} {state} franchise manager",
         f"{entity_name} {state} operator",
+        f"{entity_name} {state} owner",
         f"{entity_name} {state} grand opening",
         f"{entity_name} {state} expansion",
-        f"{entity_name} {state} Kalispell",
+        f"{entity_name} {state} principal",
+        f"{entity_name} {state} developer",
+        f"{entity_name} {state} regional manager",
     ]
 def _classify_public_source(url: str, *, title: str = "", snippet: str = "") -> str:
     host = parse.urlparse(url).netloc.lower()
@@ -802,6 +781,30 @@ def _fetch_public_search_results(
                 continue
             seen_urls.add(result.url)
             results.append(result)
+    # For retail/franchise targets, directly probe local press sources
+    # that DuckDuckGo may not surface in top results
+    if profile_key == "retail_multi_site":
+        state = _state_scope(city_state)
+        press_queries = [
+            f"{target_name} {state} franchise grand opening",
+            f"{target_name} {state} franchise owner",
+            f"{target_name} {state} LLC operator",
+            f"{target_name} {city_state} opening",
+        ]
+        for press_query in press_queries:
+            search_url = "https://html.duckduckgo.com/html/?q=" + parse.quote_plus(press_query)
+            html = _fetch_optional_url(search_url)
+            if not html:
+                continue
+            parser = _DuckDuckGoHTMLParser()
+            parser.feed(html)
+            for result in parser.results:
+                if not result.url or result.url in seen_urls:
+                    continue
+                if result.source_type not in ("local_press", "business_registry", "project_record"):
+                    continue
+                seen_urls.add(result.url)
+                results.append(result)
     ranked = sorted(
         results,
         key=lambda item: _score_search_result_for_investigation(
@@ -1397,10 +1400,11 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 3
     if source_type in {"local_press", "project_record"} and any(token in role for token in ("franchise", "operator", "owner", "manager", "developer")):
         score += 4
+    # Strongest possible signal: named operator from local press on retail/franchise target
     if (
         source_type == "local_press"
+        and any(token in role for token in ("franchise", "franchisee", "operator", "owner", "developer", "regional"))
         and profile_key == "retail_multi_site"
-        and any(token in role for token in ("franchise", "franchisee", "operator", "owner", "developer"))
     ):
         score += 8
     if candidate.get("from_entity"):
@@ -1501,6 +1505,15 @@ def investigate_public_lead(
         profile_key=initial_profile_key,
     )
     for result in search_results:
+        # For high-value source types, attempt to fetch and scrape the full page
+        # so candidate extraction has real text to work with — not just the snippet
+        if result.source_type in ("local_press", "business_registry", "project_record"):
+            full_html = _fetch_optional_url(result.url)
+            if full_html:
+                pages.append(_parse_page(result.url, full_html))
+                if len(pages) >= (MAX_WEBSITE_PAGES + MAX_SEARCH_RESULTS + 2):
+                    break
+                continue
         pages.append(_search_result_to_page(result))
         if len(pages) >= (MAX_WEBSITE_PAGES + MAX_SEARCH_RESULTS + 2):
             break
