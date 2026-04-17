@@ -127,6 +127,13 @@ ROLE_NAME_RE = re.compile(
     r")\s*(?:,|-|\u2013|\u2014|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})",
     re.I,
 )
+NEWS_NAME_ROLE_RE = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})"
+    r",\s*([A-Za-z/& ]{3,60}?)"
+    r"\s+(?:for|of|at|with)\s+"
+    r"[A-Z][A-Za-z0-9&' .,\-]{2,60}",
+    re.I,
+)
 ENTITY_NAME_RE = re.compile(r"\b([A-Z][A-Za-z0-9&' .-]+?,\s+(?:LLC|Inc\.?|Corp\.?|Corporation|Ltd\.?))\b")
 SITE_NAME_RE = re.compile(
     r'(?is)<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']'
@@ -790,6 +797,11 @@ def _fetch_public_search_results(
             f"{target_name} {state} franchise owner",
             f"{target_name} {state} LLC operator",
             f"{target_name} {city_state} opening",
+            f"site:dailyinterlake.com {target_name}",
+            f"site:nbcmontana.com {target_name} {state}",
+            f"site:kpax.com {target_name} {state}",
+            f"site:montanarightnow.com {target_name} franchise",
+            f"site:billingsgazette.com {target_name} {state}",
         ]
         for press_query in press_queries:
             search_url = "https://html.duckduckgo.com/html/?q=" + parse.quote_plus(press_query)
@@ -1251,6 +1263,43 @@ def _extract_role_candidates_from_text(
             if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
                 confidence = "High"
                 reason = "Named on a public page with a title aligned to the requested contact type."
+            candidates.append(
+                {
+                    "full_name": name_clean,
+                    "role": role_clean,
+                    "confidence": confidence,
+                    "finding_type": "confirmed_named_contact",
+                    "why_relevant": reason,
+                    "source_url": source_url,
+                    "source_type": source_type,
+                    "source_excerpt": chunk[:240],
+                }
+            )
+    # Third pass — news-article format: "Ryan Schneider, franchise manager for Last Best Oil Change"
+    for chunk in _sentence_chunks(text):
+        lowered = chunk.lower()
+        if not any(keyword in lowered for keyword in ROLE_KEYWORDS):
+            continue
+        for match in NEWS_NAME_ROLE_RE.finditer(chunk):
+            name_clean = _normalize_candidate_name(match.group(1))
+            role_clean = _normalize_role_text(match.group(2))
+            if not name_clean or not role_clean:
+                continue
+            if not any(hint in role_clean.lower() for hint in TITLE_HINTS):
+                continue
+            key = (name_clean, role_clean.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            confidence = "High" if source_type in {"local_press", "project_record"} else "Medium"
+            reason = (
+                "Named in local press with a role tied to the target business or franchise."
+                if source_type == "local_press"
+                else "Named on a public page with a role/title."
+            )
+            if desired_tokens and any(token in role_clean.lower() for token in desired_tokens):
+                confidence = "High"
+                reason = "Named with a role matching the requested contact type."
             candidates.append(
                 {
                     "full_name": name_clean,
