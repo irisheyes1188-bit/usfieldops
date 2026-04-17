@@ -966,10 +966,17 @@ def _score_entity_candidate(entity: str, page: FetchedPage, city_state: str, tar
 def _extract_best_operating_entity(pages: list[FetchedPage], city_state: str, target_name: str) -> str:
     candidates: list[tuple[int, str]] = []
     for page in pages:
+        # Scan all pages for LLC/entity names — including job boards,
+        # which often contain the operating LLC name in their listing text
         text = " ".join(part for part in [page.title, page.text] if part)
         for match in ENTITY_NAME_RE.findall(text or ""):
             candidate = match.strip()
-            candidates.append((_score_entity_candidate(candidate, page, city_state, target_name), candidate))
+            # Penalize job board source but do not skip — LLC name may only
+            # appear in a job listing (e.g. "Last Best Oil Change, LLC hiring...")
+            score = _score_entity_candidate(candidate, page, city_state, target_name)
+            if page.source_type == "job_board":
+                score = max(score - 4, 0)
+            candidates.append((score, candidate))
     if not candidates:
         return ""
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
