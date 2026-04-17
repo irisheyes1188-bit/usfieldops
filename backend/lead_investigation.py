@@ -1397,6 +1397,14 @@ def _rank_contact_candidate(candidate: dict, desired_contact_type: str, profile_
         score += 3
     if source_type in {"local_press", "project_record"} and any(token in role for token in ("franchise", "operator", "owner", "manager", "developer")):
         score += 4
+    if (
+        source_type == "local_press"
+        and profile_key == "retail_multi_site"
+        and any(token in role for token in ("franchise", "franchisee", "operator", "owner", "developer"))
+    ):
+        score += 8
+    if candidate.get("from_entity"):
+        score += 6
     return score
 
 
@@ -1504,6 +1512,7 @@ def investigate_public_lead(
         )
 
     operating_entity = _extract_best_operating_entity(pages, city_state, target_name) or _extract_operating_entity(combined_text)
+    entity_result_urls: set[str] = set()
     if operating_entity and operating_entity.lower() not in target_name.lower():
         entity_queries = (
             _build_search_queries(
@@ -1531,6 +1540,7 @@ def investigate_public_lead(
                 continue
             pages.append(_search_result_to_page(result))
             existing_urls.add(result.url)
+            entity_result_urls.add(result.url)
             if len(pages) >= (MAX_WEBSITE_PAGES + (MAX_SEARCH_RESULTS * 2) + 2):
                 break
         combined_text = "\n".join(page.text for page in pages if page.text)
@@ -1567,6 +1577,9 @@ def investigate_public_lead(
                 profile_key=profile_key,
             )
         )
+    for c in all_candidates:
+        if c.get("source_url") in entity_result_urls:
+            c["from_entity"] = True
     candidates = _dedupe_role_candidates(all_candidates)
     department_routes = _dedupe_department_routes(all_department_routes)
 
@@ -1639,6 +1652,25 @@ def investigate_public_lead(
         f"and {len(department_routes)} likely routing department(s)."
     )
     best_contact = _choose_best_contact(candidates, desired_contact_type, profile_key)
+
+    _expansion_scope_re = re.compile(
+        r"(?i)(?:first|one|(?:\d+(?:st|nd|rd|th)?))\s+of\s+(?:\w+|\d+)\s+planned\s+(?:stores?|locations?|units?|restaurants?|sites?)"
+    )
+    _scope_match = _expansion_scope_re.search(f"{lead_context} {combined_text[:3000]}")
+    if _scope_match and best_contact:
+        best_contact = dict(best_contact)
+        _existing_why = best_contact.get("why_relevant") or ""
+        best_contact["why_relevant"] = f"{_existing_why} Expansion scope signal: {_scope_match.group(0).strip()}.".strip()
+
+    best_contact_full_output = None
+    if best_contact and (best_contact.get("confidence") or "").lower() == "high":
+        best_contact_full_output = (
+            f"{best_contact.get('full_name', 'Unknown')} \u2014 {best_contact.get('role', 'Unknown role')} "
+            f"(Confidence: {best_contact.get('confidence', '')}). "
+            f"Why this person: {best_contact.get('why_relevant', '')} "
+            f"Source: {best_contact.get('source_url', '')}"
+        )
+
     entity_type = {
         "nonprofit": "public_nonprofit_match",
         "public_institution": "public_institution_match",
@@ -1684,4 +1716,5 @@ def investigate_public_lead(
             for result in search_results[:MAX_SEARCH_RESULTS]
         ],
         "operating_entity": operating_entity,
+        "full_output": best_contact_full_output,
     }
