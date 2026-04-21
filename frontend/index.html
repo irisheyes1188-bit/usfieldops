@@ -1893,15 +1893,15 @@ function runUniversalParse(mode){
     });
   }
 
-  // STEP 2.5: Activity blocks
-  if(mode==='load' && /FIELDOPS ACTIVITY/i.test(raw)){
-    var activityBlocks=raw.split(/(?=FIELDOPS ACTIVITY)/i).filter(function(b){return /FIELDOPS ACTIVITY/i.test(b);});
+  // STEP 2.5: Activity / field info blocks
+  if(mode==='load' && /FIELDOPS\s+(?:ACTIVITY|INFO)/i.test(raw)){
+    var activityBlocks=raw.split(/(?=FIELDOPS\s+(?:ACTIVITY|INFO))/i).filter(function(b){return /FIELDOPS\s+(?:ACTIVITY|INFO)/i.test(b);});
     activityBlocks.forEach(function(block){
-      var title='',owner='GUY',lane='',type='note',status='open',timestamp='',location='',contact='',organization='',notes='',followUp=false;
+      var title='',owner='GUY',lane='',type=/FIELDOPS\s+INFO/i.test(block)?'info':'note',status='open',timestamp='',location='',contact='',organization='',notes='',followUp=false;
       var noteLines=[],captureNotes=false;
       block.split('\n').forEach(function(line){
         var t=line.trim();
-        if(!t || /^FIELDOPS ACTIVITY$/i.test(t) || /^-{4,}$/.test(t))return;
+        if(!t || /^FIELDOPS\s+(?:ACTIVITY|INFO)$/i.test(t) || /^-{4,}$/.test(t))return;
         if(/^Owner:/i.test(t)){owner=t.replace(/^Owner:\s*/i,'').trim().toUpperCase()||'GUY';}
         else if(/^Title:/i.test(t)){title=t.replace(/^Title:\s*/i,'').trim();}
         else if(/^Lane:/i.test(t)){var lm=t.match(/[lL]([1234])/);lane=lm?'l'+lm[1]:'';}
@@ -1923,7 +1923,7 @@ function runUniversalParse(mode){
         activityItems.unshift({id:'A-'+Date.now()+'-'+loadedActivities,title:title,owner:owner,lane:lane,type:type,status:status,timestamp:timestamp,location:location,contact:contact,organization:organization,notes:notes,followUp:followUp,createdAt:new Date().toISOString()});
         loadedActivities++;
       }else{
-        warnings.push('FIELDOPS ACTIVITY block missing Title: or NOTES: content');
+        warnings.push('FIELDOPS ACTIVITY/INFO block missing Title: or NOTES: content');
       }
     });
   }
@@ -2068,7 +2068,7 @@ function runUniversalParse(mode){
   }
 
   // STEP 5: Unclassified
-  var knownPats=[/^EVENT\s*\|/i,/^ALLDAY\s*\|/i,/^\[(TODO|INPROGRESS|IN PROGRESS|WAITING|CARRY|DONE)\]/i,
+  var knownPats=[/^EVENT\s*\|/i,/^ALLDAY\s*\|/i,/^\[(TODO|INPROGRESS|IN PROGRESS|WAITING|CARRY|DONE)\]/i,/^[-*]\s+\S/,
     /^(Agent|Mission|Priority|Lane|Date|Objective|Output|Input|Source|Owner|Task|Status|Title|Type|Timestamp|Location|Contact|Organization|Organisation|Notes|Follow-Up|FIELDOPS|HIGHLIGHTED|CRITICAL|AGENDA|MY OPS|TASKS|QUEUE|MORNING|DEBRIEF|CARRY FORWARD|---)/i,/^[-=*#\s]*$/,/^\d+\./];
   lines.forEach(function(line){
     var l=line.trim();if(!l)return;
