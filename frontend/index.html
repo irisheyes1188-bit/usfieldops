@@ -1917,9 +1917,17 @@ function runUniversalParse(mode){
         else if(/^[A-Z][A-Za-z\- ]+:\s*/.test(t)){captureNotes=false;}
       });
       notes=noteLines.join(' ').trim();
+      if(!notes && /FIELDOPS\s+INFO/i.test(block)){
+        var notesFallback=block.match(/^NOTES:\s*\n?([\s\S]+)$/im);
+        if(notesFallback)notes=notesFallback[1].split('\n').map(function(line){return line.trim();}).filter(Boolean).join(' ');
+      }
       if(!timestamp)timestamp=new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
       if(!title)title=(notes.split(/\s+/).slice(0,7).join(' ')||'Field Note').trim();
       if(title){
+        var duplicateActivity=activityItems.some(function(a){
+          return (a.title||'')===title && (a.notes||'')===notes && (a.lane||'')===lane && (a.type||'')===type;
+        });
+        if(duplicateActivity)return;
         activityItems.unshift({id:'A-'+Date.now()+'-'+loadedActivities,title:title,owner:owner,lane:lane,type:type,status:status,timestamp:timestamp,location:location,contact:contact,organization:organization,notes:notes,followUp:followUp,createdAt:new Date().toISOString()});
         loadedActivities++;
       }else{
